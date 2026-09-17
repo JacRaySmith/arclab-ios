@@ -1,0 +1,98 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "shortDescription" : "RTMPose-m Halpe-26 (26 body keypoints incl. left\/right heel, big toe, small toe). Input: 256x192 RGB person crop, 0-255. Output: SimCC 1-D classifications, argmax \/ 2.0 = (x, y) in crop pixels. Training data Halpe\/AlphaPose: research \/ non-commercial.",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 26 × 384)",
+        "shortDescription" : "",
+        "shape" : "[1, 26, 384]",
+        "name" : "simcc_x",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 26 × 512)",
+        "shortDescription" : "",
+        "shape" : "[1, 26, 512]",
+        "name" : "simcc_y",
+        "type" : "MultiArray"
+      }
+    ],
+    "storagePrecision" : "Float32",
+    "modelParameters" : [
+
+    ],
+    "author" : "converted from mmpose rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192 (Apache-2.0 code)",
+    "specificationVersion" : 8,
+    "license" : "model code Apache-2.0 (mmpose); training annotations Halpe\/AlphaPose non-commercial research use only",
+    "mlProgramOperationTypeHistogram" : {
+      "Ios17.sigmoidHard" : 4,
+      "Ios17.mul" : 14,
+      "Ios17.linear" : 5,
+      "Ios17.sub" : 1,
+      "Ios17.matmul" : 2,
+      "Ios17.conv" : 62,
+      "Ios16.maxPool" : 3,
+      "Ios17.clip" : 2,
+      "Ios17.concat" : 5,
+      "Ios17.add" : 12,
+      "Ios16.reduceMean" : 4,
+      "Ios17.realDiv" : 2,
+      "Ios16.reduceL2Norm" : 2,
+      "Ios17.expandDims" : 1,
+      "Ios16.relu" : 1,
+      "Ios17.squeeze" : 2,
+      "Ios17.reshape" : 1,
+      "Split" : 2,
+      "Ios16.silu" : 58
+    },
+    "computePrecision" : "Mixed (Float32, Int32)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "14.0",
+      "tvOS" : "17.0",
+      "visionOS" : "1.0",
+      "watchOS" : "10.0",
+      "iOS" : "17.0",
+      "macCatalyst" : "17.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "height" : "256",
+        "colorspace" : "RGB",
+        "isOptional" : "0",
+        "width" : "192",
+        "isColor" : "1",
+        "formattedType" : "Image (Color 192 × 256)",
+        "hasSizeFlexibility" : "0",
+        "type" : "Image",
+        "shortDescription" : "",
+        "name" : "image"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.source" : "torch==2.14.0",
+      "keypoints" : "nose,left_eye,right_eye,left_ear,right_ear,left_shoulder,right_shoulder,left_elbow,right_elbow,left_wrist,right_wrist,left_hip,right_hip,left_knee,right_knee,left_ankle,right_ankle,head,neck,hip,left_big_toe,right_big_toe,left_small_toe,right_small_toe,left_heel,right_heel",
+      "com.github.apple.coremltools.conversion_date" : "2026-09-16",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "input_size_wh" : "192x256",
+      "com.github.apple.coremltools.version" : "9.0",
+      "bbox_padding" : "1.25",
+      "simcc_split_ratio" : "2.0"
+    },
+    "generatedClassName" : "ArcLabFootModel",
+    "method" : "predict"
+  }
+]

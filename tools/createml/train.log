@@ -1,0 +1,15 @@
+[2026-09-14T15:26:33Z] loading /Users/smyth/Desktop/arclab-labels-all
+[2026-09-14T15:26:33Z] train 1544 / held-out 272 tiles
+[2026-09-14T15:26:33Z] training: Max Iterations: Optional(1500)
+Batch Size: nil
+
+Parsing JSON records from /Users/smyth/Desktop/arclab-labels-all/train/annotations.json
+Successfully parsed 1544 elements from the JSON file /Users/smyth/Desktop/arclab-labels-all/train/annotations.json
+[2026-09-14T15:53:11Z] training finished
+training metrics: mAP@IoU50=0.9408813118934631  mAP@variedIoU=0.43126279190182687
+  ball: AP@IoU50=0.9408813118934631  AP@variedIoU=0.43126279190182687
+validation metrics: mAP@IoU50=0.8450613617897034  mAP@variedIoU=0.37521558611188083
+  ball: AP@IoU50=0.8450613617897034  AP@variedIoU=0.37521558611188083
+held-out evaluation (272 tiles): mAP@IoU50=0.8796296296296297  mAP@variedIoU=0.42245370370370355
+  ball: AP@IoU50=0.8796296296296297  AP@variedIoU=0.42245370370370355
+[2026-09-14T16:16:27Z] wrote /Users/smyth/Desktop/BallDetector.mlmodel

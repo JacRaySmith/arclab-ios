@@ -1,0 +1,16 @@
+{
+ "ball": {
+  "diff_threshold": 10.975999999999999,
+  "circularity_min": 0.4,
+  "gate_diameters": 1.6,
+  "interpolate_gaps": true,
+  "max_area_frac": 5.2,
+  "min_area_frac": 0.105,
+  "bg_frames": 25,
+  "orange_margin": 6,
+  "chroma_weight": 3.0,
+  "template_fill": true,
+  "template_min_score": 0.65,
+  "centroid_mode": "extent"
+ }
+}

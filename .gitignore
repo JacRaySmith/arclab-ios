@@ -1,0 +1,11 @@
+.build/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+.DS_Store
+*.swp
+footage/
+tools/pytrack/runs/
+tools/pytrack/shots/
+*.pkl
+*.mp4

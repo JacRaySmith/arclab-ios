@@ -1,0 +1,76 @@
+# XcodeGen spec for the ArcLab iOS app (docs/DECISIONS.md §9.2: XcodeGen over Tuist).
+# Regenerate with `cd App && xcodegen generate`. The .xcodeproj is git-ignored; this file is the source of truth.
+name: ArcLab
+options:
+  bundleIdPrefix: com.arclab
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.6"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  ShotGeometry:
+    path: ../Packages/ShotGeometry
+  ShotVideo:
+    path: ../Packages/ShotVideo
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"            # Swift 6 language mode (compiler is 6.3)
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+
+targets:
+  ArcLab:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources
+    dependencies:
+      # Only the library products. ShotVideo's `TrajectoryProbe` executable is macOS tooling and is not linked.
+      - package: ShotGeometry
+        product: ShotGeometry
+      - package: ShotVideo
+        product: ShotVideo
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: ArcLab
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]   # spoken per-shot feedback keeps playing if the screen locks mid-block
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSPhotoLibraryUsageDescription: ArcLab reads the shot clips you pick so it can measure the ball's flight. Nothing leaves the phone.
+        NSCameraUsageDescription: ArcLab uses the camera to record shot clips for analysis. Nothing leaves the phone.
+        # The in-app recorder keeps the audio track on purpose: the filming protocol asks the shooter to
+        # say "make" or "miss" after every shot, and that audio is the ground-truth log.
+        NSMicrophoneUsageDescription: ArcLab records the audio with your clip so your spoken "make" or "miss" after each shot is kept with the video. Nothing leaves the phone.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arclab.app
+        PRODUCT_NAME: ArcLab
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: KN6TTT6CJ7   # the user's personal Apple ID team (free provisioning, 7-day profiles)
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+schemes:
+  ArcLab:
+    build:
+      targets:
+        ArcLab: all
+    run:
+      # Release: the per-pixel Swift loops in ShotVideo are ~100× slower unoptimised (a Debug phone build
+      # spent 622 s in the ball detector on one window on 2026-09-14; Release on the Mac takes ~4 s).
+      config: Release
+    archive:
+      config: Release

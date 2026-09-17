@@ -1,0 +1,10 @@
+{
+  "note": "Human labels from the shooter stepping through review videos (2026-09-14). Frames are indices in the named review video; release happens between frame N and N+1. Review windows start at the listed file time; file time = start + (N + 0.5) / 30; real time = file time / 4.",
+  "labels": [
+    {"video": "freethrow_t89.mov",  "window_start_file_s": 88.5,  "release_between_frames": [49, 50], "release_file_s": 90.150, "pytrack_shot": "shots/ft/shot05"},
+    {"video": "freethrow_t313.mov", "window_start_file_s": 312.4, "release_between_frames": [64, 65], "release_file_s": 314.550, "pytrack_shot": "shots/ft/shot11"},
+    {"video": "freethrow_t817.mov", "window_start_file_s": 815.8, "release_between_frames": [46, 47], "release_file_s": 817.350, "pytrack_shot": "shots/ft/shot24"}
+  ],
+  "tracker_error_frames_file": {"pose_based_release": [-0.5, -4.5, -0.5], "ball_only_release": [-0.5, -12.5, 0.5]},
+  "conclusion": "pose-based release (ball ≥ 1 diameter from the nearer wrist, above it, rising) has a mean bias of −1.8 file frames = −15 ms real (≈ 0.8° of release angle at 7 m/s); ball-only release fails when the tracker follows the held ball."
+}
