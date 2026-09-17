@@ -1,3 +1,59 @@
+# START HERE — state on 2026-09-16 (evening PT), written for the next agent
+
+**Read in this order:** CLAUDE.md (rules, never modified) → this section → docs/PLAN-1.3-2026-09-16.md and
+docs/IMPROVEMENTS-2026-09-16.md (§10 roadmap: 1.2 UI done, 1.3 biometrics done, 1.4 coaching/biometrics next) →
+docs/PHASE2-PREP.md (every measured change, newest at the bottom) → docs/research/ (graded evidence).
+
+**Where things are**
+- Code: private GitHub repo https://github.com/JacRaySmith/arclab-ios, branch `main`, tag `v1.3`; the 1.3 phone build is
+  the release asset `ArcLab-1.3-iphoneos.zip`. Tree is clean and committed. Footage and build products are git-ignored.
+- Phone: iPhone 14 Pro, ArcLab 1.3 installed (Release, Xcode 27.0, team KN6TTT6CJ7). devicectl id
+  18543A40-891D-57BE-BBE9-7A8CD5DEDF28 (list shows the UDID 00008120-… now; the old id still works). The phone must be
+  unlocked and plugged in for install/launch (error 4016 otherwise).
+- Build/gate commands: ShotGeometry `swift test -Xswiftc -O --scratch-path <scratchpad>/sgbuild` (Xcode 27 fails to
+  codesign a test bundle built inside the iCloud-synced Desktop tree; see README); ShotVideo `swift build -c release`;
+  app `cd App && xcodegen generate && xcodebuild -project ArcLab.xcodeproj -scheme ArcLab -configuration Release
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates -derivedDataPath <one shared path> build`, then
+  `xcrun devicectl device install app --device <id> <ArcLab.app>` and `process launch … com.arclab.app`. Phase-1 gate:
+  `swift run -c release GeometryHarness`. Foot model ships compiled: Packages/ShotVideo/Sources/ShotVideo/Resources/
+  ArcLabFootModel.mlmodelc (source in Packages/ShotVideo/Models; recompile with `xcrun coremlc compile`).
+- The user's data: the app logs everything to Documents/ArcLab/logs/activity-<day>.jsonl (pull with devicectl copy from,
+  domain appDataContainer com.arclab.app); sessions in Library/Application Support/ArcLab/sessions.json; BodyShot exports
+  in Documents/ArcLab/body. Scratchpad copies are session-local and may be gone.
+
+**This Mac has 8 GB RAM.** Agents each creating a derived-data folder took the scratchpad to 36 GB and the system killed
+background jobs. Use one shared derived-data path, delete it after the gate, no polling watchers, at most 2–3 Opus agents.
+
+**What 1.3 measured (honest limits to carry forward)**
+- The "110 phone shots" are 37 unique free throws exported three times (FormEval deduplicates on the 2-D input).
+- Coachable now (ICC ≥ 0.75 across repeated free throws): jump height 0.92, head horizontal travel 0.86. NOT coachable
+  yet at 7 m: knee minimum (ICC −0.26) and elbow angle at release (SDC 42°). Do not surface those as coaching numbers.
+- Hand plates are fitted only where both knuckles were seen; at the release instant the ball hides the hand on ~83 % of
+  frames. The close-up form clip is the path for hands.
+- Foot triangles: detection 100 % at set/dip/release on the 240 fps clip; foot angle at set repeats to ~2° (±1.2° per
+  shot); the triangle's width prior is ~40 % too wide vs the toe-tip landmarks (deliberately not tuned); foot angle is
+  measured against the camera→rim bearing (38° parallax here) — wire RimCalibration's rim position into
+  FootTriangleOptions to make it a foot-to-rim angle. Halpe-26 licence is research-only (docs/DECISIONS.md).
+- The fitted neck→nose length wanders 11.6 % frame to frame: the head is the least-constrained joint.
+
+**Open items, in the order I would take them**
+1. Phone benchmark of the foot model (read `body.feet` in the activity log after the user runs a session; FP32 may refuse
+   the Neural Engine — FP16 was rejected on accuracy, so if it is slow, look at compute units or a smaller input).
+2. Rim-bearing parallax fix for the foot angle (above). 3. Merge the two body-pose passes (~2 s/window at 240 fps) and
+   fix the one-pixel tile-origin bug in CoreMLBallDetector — both need a re-baseline with FormEval, not bit parity.
+4. 1.4 coaching: bandwidth per-shot cues on the coachable measures only; weekly review; drill picker; the footwork
+   footage request in docs/DESIGN-FOOTWORK-2026-09-16.md §6 (still owed by the user), the 30–45° off-line clip, the
+   close form clip, the behind clip with tape (spin). 5. Label the 20-frame sheet (scratchpad/labels, may be gone —
+   regenerate with the FormEval label script) to turn the harness into ground truth.
+6. Small UI leftovers: Review/Learn tabs keep old inline titles; Today card does not refresh on an edited session;
+   verify the ring ellipse draws on the inline rim thumbnail on the phone.
+
+**User preferences that matter:** never fabricate a number (nil with a reason), grade coaching claims A–D, put the
+build on the phone at every clean point, do not ask permission for routine work, be token-efficient with Opus agents,
+keep the GitHub repo private.
+
+---
+
 # Handoff — 2026-09-14 (pytrack self-correcting loop)
 
 ## App target (added 2026-09-14)
