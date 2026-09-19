@@ -7,8 +7,11 @@ import simd
 import UIKit
 import UserNotifications
 
-/// One shot in a session: the window the scanner found, what the analyzer made of it, and nothing
-/// persisted anywhere. Everything here lives for as long as the app is open (no SwiftData yet).
+/// One shot in a session: the window the scanner found and what the analyzer made of it.
+///
+/// This lives for as long as the app is open (no SwiftData yet) — but since 2026-09-19 it is no longer
+/// the *only* copy. Everything measurable here is mirrored into `GuidedCheckpoint` on disk as it is
+/// produced, because a process death used to take an entire session with it.
 struct SessionShot: Identifiable, Sendable {
     enum Status: Sendable, Equatable {
         case queued
@@ -24,6 +27,12 @@ struct SessionShot: Identifiable, Sendable {
     var row: BlockRow?
     /// Order in which this shot finished analysing (for "last shot" feedback), nil until measured.
     var completionOrder: Int?
+    /// The record this shot was restored from after a process death (`GuidedCheckpoint`). Present only
+    /// on a restored shot, and only until it is re-analysed. It carries the things a `BlockRow` does not
+    /// — the 3-D form, and the reason there is none — so a crash cannot silently drop them on the next
+    /// save. There is no `result` behind a restored shot, so its per-shot detail screen is unavailable
+    /// and says so rather than showing an empty one.
+    var restored: SavedShot?
 
     var verdict: ShotAcceptance.Verdict? { row?.verdict }
     var outcome: OutcomeInference? { row?.outcome }
@@ -48,8 +57,9 @@ struct SessionShot: Identifiable, Sendable {
     }
 }
 
-/// Drives the session flow: scan the whole clip for shot windows, then analyse them one at a time,
-/// keeping everything in memory. The single-shot flow in `AnalysisModel` is untouched.
+/// Drives the session flow: scan the whole clip for shot windows, then analyse them one at a time.
+/// The single-shot flow in `AnalysisModel` is untouched. `onCheckpoint` fires at every step that
+/// changes what has been measured, and `restore(from:model:)` puts a checkpoint back.
 @MainActor
 @Observable
 final class SessionModel {
@@ -126,6 +136,21 @@ final class SessionModel {
 
     private var scanTask: Task<Void, Never>?
     private var analyseTask: Task<Void, Never>?
+
+    /// Called after every step that changes what has been measured: the scan finishing, each shot
+    /// finishing, each body model finishing, and the batch ending. The guided and practice screens use
+    /// it to write their crash checkpoint, which is why it is a closure and not a store reference —
+    /// this model still knows nothing about where anything is kept.
+    var onCheckpoint: (@MainActor (SessionModel) -> Void)?
+
+    /// True when the shots in this model came back from a checkpoint rather than from a scan in this
+    /// run of the app. Restored shots carry their numbers but not the tracked samples behind them, so
+    /// anything that would re-derive a measurement from the samples must not run.
+    private(set) var restoredFromCheckpoint = false
+    /// What the restore could and could not bring back, shown on the screen that resumed it.
+    private(set) var restoreNote: String?
+
+    private func checkpoint() { onCheckpoint?(self) }
 
     var rimCenterPx: SIMD2<Double>? { scan?.rimCenterPx ?? calibration?.ellipse.center }
 
@@ -231,6 +256,8 @@ final class SessionModel {
                 stageRow["stage"] = "scan"
                 stageRow["frames"] = result.framesScanned
                 log.event("scan.stages", stageRow)
+                // The scan is minutes of work. It is on disk before the first shot is analysed.
+                checkpoint()
             } catch is CancellationError {
                 scanMessage = nil
                 scanError = "the scan was cancelled"
@@ -255,6 +282,87 @@ final class SessionModel {
     func cancelScan() {
         scanTask?.cancel()
         scanTask = nil
+    }
+
+    // MARK: Coming back after the app died
+
+    /// Rebuild this block from a checkpoint an earlier run of the app wrote, instead of scanning and
+    /// measuring it all again.
+    ///
+    /// What comes back and what does not, stated rather than hidden:
+    /// * Every **measured** shot returns with the numbers, the verdict and the reasons it was measured
+    ///   with — and with the calibration it was measured with, because the rim points are restored from
+    ///   the checkpoint and re-calibrated by the caller before this is called. It does *not* come back
+    ///   with its tracked samples, so its per-shot detail screen cannot be opened; `resultContext`
+    ///   already returns nil for a shot with no result and the UI says why.
+    /// * Every **failed** window returns failed, with the reason it failed.
+    /// * Every other window returns **queued** and is measured now. Nothing is shown as a zero.
+    /// * The scan's own hints (frame rate, ball size, per-frame seeds) are not kept, so the remaining
+    ///   windows are measured without them. They are hints to the detector, not inputs to any
+    ///   measurement, so the numbers are the same; it simply takes a little longer.
+    @discardableResult
+    func restore(from checkpoint: GuidedCheckpoint, model: AnalysisModel) -> Bool {
+        guard let clip = model.clip, let cal = model.calibration, let k = model.intrinsics, !isBusy else { return false }
+        cancelScan()
+        cancelAnalysis()
+        clipURL = clip.url
+        timeScale = model.timeScale
+        intrinsics = k
+        calibration = cal
+        rimPoints = model.rimPoints
+        hfovProvenance = clip.source == .recordedInApp ? "sidecar" : "assumed"
+        scan = nil
+        scanError = nil
+        analysisError = nil
+        scanProgress = 0
+        scanMessage = nil
+        pausedByInterruption = false
+        savedSessionID = checkpoint.savedSessionID
+        savedSpot = checkpoint.spot
+
+        let savedByID = Dictionary(checkpoint.measured.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let reasonByID = Dictionary(checkpoint.failed.map { ($0.id, $0.reason) }, uniquingKeysWith: { first, _ in first })
+        shots = checkpoint.windows.map { window in
+            var shot = SessionShot(id: window.id, window: window)
+            if let saved = savedByID[window.id] {
+                shot.row = saved.row
+                shot.restored = saved
+                shot.status = .measured
+                completionCounter += 1
+                shot.completionOrder = completionCounter
+            } else if let reason = reasonByID[window.id] {
+                shot.status = .failed(reason)
+            } else {
+                shot.status = .queued
+            }
+            return shot
+        }
+        restoredFromCheckpoint = true
+        // The lens re-pass re-analyses *every* window from scratch, which would throw away exactly the
+        // shots this restore just rescued. It runs off the tracked samples, and restored shots have
+        // none, so it could not decide honestly anyway. Marked done, with the reason kept for the UI.
+        lensPassDone = true
+
+        let queued = shots.filter { if case .queued = $0.status { return true }; return false }.count
+        let measured = shots.filter { $0.row != nil }.count
+        var notes: [String] = []
+        notes.append("\(measured) shot\(measured == 1 ? "" : "s") measured before ArcLab closed were restored with the numbers, the verdicts and the ring they were measured with.")
+        if queued > 0 {
+            notes.append("\(queued) window\(queued == 1 ? "" : "s") \(queued == 1 ? "was" : "were") never measured and \(queued == 1 ? "is" : "are") being measured now.")
+        }
+        if !checkpoint.failed.isEmpty {
+            notes.append("\(checkpoint.failed.count) window\(checkpoint.failed.count == 1 ? "" : "s") could not be measured before and \(checkpoint.failed.count == 1 ? "is" : "are") still listed with the reason.")
+        }
+        notes.append("A restored shot's own tracked path is not kept, so its detail screen cannot be opened; its numbers are unchanged.")
+        notes.append("The lens check does not re-run on a restored session: it would re-measure every shot, including the ones just recovered.")
+        restoreNote = notes.joined(separator: " ")
+        lensNote = restoreNote
+        ActivityLog.shared.event("checkpoint.restored", ["windows": shots.count, "measured": measured,
+                                                         "queued": queued, "failed": checkpoint.failed.count,
+                                                         "clip": checkpoint.clipFileName,
+                                                         "spot": checkpoint.spot?.rawValue,
+                                                         "step": checkpoint.step.rawValue])
+        return true
     }
 
     // MARK: Analysing
@@ -430,6 +538,9 @@ final class SessionModel {
                             log.event("analysis.shot.failed", ["shot": id, "error": "\(error)"])
                         }
                     }
+                    // Every shot, as it lands. A death after this line costs the shot being analysed
+                    // and nothing else.
+                    checkpoint()
                     if Task.isCancelled || pausedByInterruption { pending.removeAll() }
                     while running < lanes, !pending.isEmpty { launch(pending.removeFirst(), into: &group) }
                 }
@@ -457,6 +568,7 @@ final class SessionModel {
             log.event("analysis.end", ["seconds": Double(DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds) / 1e9,
                                        "ballSeconds": ballSeconds,
                                        "tracked": s.tracked, "accepted": s.accepted, "failed": s.failed, "thermal": ActivityLog.thermal()])
+            checkpoint()
         }
     }
 
@@ -508,6 +620,8 @@ final class SessionModel {
                 Self.export(shot, key: clipURL?.deletingPathExtension().lastPathComponent ?? "clip",
                             shotID: id, provenance: hfovProvenance)
             }
+            // The body pass rewrites the row, so the checkpoint has to follow it.
+            checkpoint()
         }
         analysisNote = nil
         bodyPhase = nil
@@ -566,6 +680,8 @@ final class SessionModel {
         pausedByInterruption = false
         savedSessionID = nil
         savedSpot = nil
+        restoredFromCheckpoint = false
+        restoreNote = nil
     }
 
     // MARK: Results

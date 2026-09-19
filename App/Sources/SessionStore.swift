@@ -102,6 +102,14 @@ struct SavedShot: Codable, Sendable, Identifiable {
         handRateAtRelease = row.handRateAtRelease
         shoulderLineYawDegrees = row.shoulderLineYawDegrees
         shooterPixelHeight = row.shooterPixelHeight
+        // A shot restored from a crash checkpoint has no live `result` to read a form out of — the form
+        // it was measured with is in the restored record itself. Take it from there, with its reason,
+        // rather than writing `form: nil` and no explanation, which would be a silent loss.
+        if shot.result == nil, let restored = shot.restored {
+            form = restored.form
+            formUnavailableReason = restored.formUnavailableReason
+            return
+        }
         // The form is kept for accepted shots only. A rejected window's body is still measured and
         // still shown on its own card; it is simply never pooled into a block's mean form.
         if row.verdict.isAccepted, var f = shot.result?.body?.form {

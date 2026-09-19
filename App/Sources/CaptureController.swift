@@ -38,6 +38,44 @@ enum CaptureEvent: Sendable {
     case recordingFinished(url: URL, configuration: CaptureConfiguration, focusLocked: Bool, exposureLocked: Bool, error: String?)
     /// `nil` = the indicator could not run on this pixel format.
     case rimIndicator(Bool?)
+    /// `AVCaptureSessionRuntimeError`. The session has stopped and the preview is black until something
+    /// restarts it; `restartAttempt` says which try this is (0 = the error itself, not yet retried).
+    case runtimeError(message: String, code: Int, restartAttempt: Int, recovered: Bool)
+    /// `AVCaptureSessionWasInterrupted` — the camera was taken away (another app, a phone call, the
+    /// screen being shared, the phone being too hot). `reason` is `AVCaptureSession.InterruptionReason`.
+    case interrupted(reason: String, code: Int)
+    case interruptionEnded
+}
+
+/// The interruption reasons by name, because the raw `Int` in the notification means nothing in a log.
+private func interruptionReasonName(_ code: Int) -> String {
+    switch AVCaptureSession.InterruptionReason(rawValue: code) {
+    case .videoDeviceNotAvailableInBackground: return "videoDeviceNotAvailableInBackground"
+    case .audioDeviceInUseByAnotherClient: return "audioDeviceInUseByAnotherClient"
+    case .videoDeviceInUseByAnotherClient: return "videoDeviceInUseByAnotherClient"
+    case .videoDeviceNotAvailableWithMultipleForegroundApps: return "videoDeviceNotAvailableWithMultipleForegroundApps"
+    case .videoDeviceNotAvailableDueToSystemPressure: return "videoDeviceNotAvailableDueToSystemPressure"
+    case .sensitiveContentMitigationActivated: return "sensitiveContentMitigationActivated"
+    default: return "unknown(\(code))"
+    }
+}
+
+/// What the shooter is told when the camera is taken away. Never a blank screen with no explanation.
+private func interruptionSentence(_ code: Int) -> String {
+    switch AVCaptureSession.InterruptionReason(rawValue: code) {
+    case .videoDeviceNotAvailableInBackground:
+        return "The camera stopped because ArcLab left the screen. Come back to this screen and it starts again."
+    case .audioDeviceInUseByAnotherClient:
+        return "Another app or the spoken feedback took the microphone, so the camera stopped. It starts again by itself when the audio is free."
+    case .videoDeviceInUseByAnotherClient:
+        return "Another app is using the camera. Close it and come back to this screen."
+    case .videoDeviceNotAvailableWithMultipleForegroundApps:
+        return "iOS will not give the camera to an app sharing the screen. Leave Split View or Slide Over and come back."
+    case .videoDeviceNotAvailableDueToSystemPressure:
+        return "The camera stopped because the phone is under too much system pressure — nearly always heat. Let it cool and come back."
+    default:
+        return "The camera was interrupted by iOS (\(interruptionReasonName(code))) and has stopped."
+    }
 }
 
 // MARK: - The session (off the main actor)
@@ -72,6 +110,15 @@ final class CaptureEngine: NSObject, @unchecked Sendable {
     private let sampleQueue = DispatchQueue(label: "com.arclab.capture.samples", qos: .utility)
     private var lastRimCheck: CFTimeInterval = 0
     private var captureRotationIsFlipped = false
+
+    /// `AVCaptureSession`'s notifications. Kept so they can be removed in `teardown` — this object is
+    /// created afresh every time the record screen is pushed, and a leaked observer would outlive it.
+    private var notificationTokens: [any NSObjectProtocol] = []
+    /// How many times a runtime error has been recovered from in this session's life. Capped, because
+    /// a session that will not come back must say so rather than spin restarting for ever.
+    private var restartAttempts = 0
+    private static let maxRestartAttempts = 3
+    private var isTornDown = false
 
     init(emit: @escaping @Sendable (CaptureEvent) -> Void) {
         self.emit = emit
@@ -214,7 +261,70 @@ final class CaptureEngine: NSObject, @unchecked Sendable {
                 warnings: warnings)
             configuration = config
             isConfigured = true
+            observeSessionHealth()
             emit(.configured(config))
+        }
+    }
+
+    // MARK: Is the session still alive?
+
+    /// The four notifications an `AVCaptureSession` uses to say it has stopped, and why. Without these
+    /// the app cannot tell a running camera from a dead one: the preview layer simply stays black,
+    /// `isRunning` keeps whatever it was last told, and the record button stays armed over nothing.
+    /// That is the failure the 2026-09-18 log could not explain, because none of it was ever recorded.
+    ///
+    /// `queue: nil` means the block runs on the thread that posted it; every value is pulled out of the
+    /// `Notification` there and only `Sendable` scalars cross into `emit`.
+    private func observeSessionHealth() {
+        guard notificationTokens.isEmpty else { return }
+        let center = NotificationCenter.default
+        let emit = self.emit
+        notificationTokens.append(center.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil
+        ) { [weak self] note in
+            let error = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
+            self?.recoverFromRuntimeError(message: error?.localizedDescription ?? "no error description",
+                                          code: error?.code ?? 0)
+        })
+        notificationTokens.append(center.addObserver(
+            forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil
+        ) { note in
+            let code = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int) ?? -1
+            emit(.interrupted(reason: interruptionReasonName(code), code: code))
+        })
+        notificationTokens.append(center.addObserver(
+            forName: AVCaptureSession.interruptionEndedNotification, object: session, queue: nil
+        ) { [weak self] _ in
+            emit(.interruptionEnded)
+            // iOS restarts the session itself after most interruptions, but not all of them; asking
+            // again costs nothing when it is already running (`start` is guarded).
+            self?.start()
+        })
+        notificationTokens.append(center.addObserver(
+            forName: AVCaptureSession.didStartRunningNotification, object: session, queue: nil
+        ) { _ in emit(.running(true)) })
+        notificationTokens.append(center.addObserver(
+            forName: AVCaptureSession.didStopRunningNotification, object: session, queue: nil
+        ) { _ in emit(.running(false)) })
+    }
+
+    /// A media-services reset (`AVError.mediaServicesWereReset`, −11819) kills the session and blanks
+    /// the preview. Apple's documented answer is to start it again; anything else that stops the
+    /// session gets the same treatment, capped so a camera that is truly gone is reported rather than
+    /// retried for ever.
+    private func recoverFromRuntimeError(message: String, code: Int) {
+        sessionQueue.async { [self] in
+            guard !isTornDown else { return }
+            guard restartAttempts < Self.maxRestartAttempts else {
+                emit(.runtimeError(message: message, code: code, restartAttempt: restartAttempts, recovered: false))
+                return
+            }
+            restartAttempts += 1
+            let attempt = restartAttempts
+            if !session.isRunning { session.startRunning() }
+            let running = session.isRunning
+            emit(.runtimeError(message: message, code: code, restartAttempt: attempt, recovered: running))
+            if running { scheduleAutoLock() }
         }
     }
 
@@ -257,6 +367,29 @@ final class CaptureEngine: NSObject, @unchecked Sendable {
             guard session.isRunning else { return }
             session.stopRunning()
             emit(.running(false))
+        }
+    }
+
+    /// Stop *and* let go. `AVCaptureVideoDataOutput` holds its sample-buffer delegate `unowned(unsafe)`,
+    /// so an engine that is deallocated while a frame is being handed to it is a use-after-free — and
+    /// this engine is built and thrown away every single time the record screen is pushed and popped.
+    /// `stop()` alone was not enough: `stopRunning()` returns while a callback can still be running on
+    /// `sampleQueue`.
+    ///
+    /// So: drop the delegate first (after that no new callback can start), then drain `sampleQueue`
+    /// with a `sync` barrier (after that no callback is still running), and only then let the strong
+    /// `self` this block captured go. The notification observers go with it.
+    func teardown() {
+        sessionQueue.async { [self] in
+            isTornDown = true
+            videoDataOutput?.setSampleBufferDelegate(nil, queue: nil)
+            for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
+            notificationTokens = []
+            if let movie = movieOutput, movie.isRecording { movie.stopRecording() }
+            if session.isRunning { session.stopRunning() }
+            // `sampleQueue` never waits on `sessionQueue`, so this cannot deadlock. It is the point at
+            // which no `captureOutput` is in flight any more.
+            sampleQueue.sync {}
         }
     }
 
@@ -477,6 +610,20 @@ final class CaptureController {
     private(set) var rimInFrame: Bool?
     private(set) var lastClip: RecordedClip?
     private(set) var thermalWarning: String?
+    /// Set when the session stopped for a reason iOS told us about — an interruption or a runtime
+    /// error. A black preview always has a sentence next to it now, never nothing.
+    private(set) var healthNote: String?
+    /// True while `AVCaptureSession` says it is interrupted; cleared by `interruptionEnded`.
+    private(set) var isInterrupted = false
+
+    /// Where the picture actually is inside the preview view, in that view's own coordinates. Read
+    /// from `AVCaptureVideoPreviewLayer` itself (`layerRectConverted`), which is the only thing that
+    /// knows the layer's bounds, its `.resizeAspect` gravity *and* the rotation applied to its
+    /// connection all at once. The framing overlay is drawn against this and nothing else.
+    private(set) var previewVideoRect: CGRect = .zero
+    /// The rotation the preview connection is currently showing, degrees. 0/180 = the picture is the
+    /// sensor's landscape frame; 90/270 = it has been turned upright and is taller than it is wide.
+    private(set) var previewRotationDegrees: CGFloat = 0
 
     /// Called on the main actor once a clip is on disk with its sidecar written.
     var onRecorded: ((RecordedClip) -> Void)?
@@ -488,6 +635,9 @@ final class CaptureController {
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservations: [NSKeyValueObservation] = []
     private weak var previewLayer: AVCaptureVideoPreviewLayer?
+    /// Removed in `end()`. `begin()` runs on every appearance of the record screen, and the old code
+    /// added one of these each time and removed none.
+    private var thermalObserver: (any NSObjectProtocol)?
 
     var session: AVCaptureSession? { engine?.session }
 
@@ -528,12 +678,19 @@ final class CaptureController {
         #endif
     }
 
-    /// Stops the session. Call from `.onDisappear`: a running capture session is the most expensive
-    /// thing the app can leave switched on.
+    /// Stops the session *and* releases every hook into it. Call from `.onDisappear`: a running
+    /// capture session is the most expensive thing the app can leave switched on, and an engine that
+    /// is still a sample-buffer delegate when it deallocates is a crash.
     func end() {
+        ActivityLog.shared.event("capture.end", ["wasRunning": isRunning, "recording": isRecording])
         tickTask?.cancel()
         tickTask = nil
-        engine?.stop()
+        rotationObservations = []
+        rotationCoordinator = nil
+        if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
+        thermalObserver = nil
+        engine?.teardown()
+        engine = nil
         isRunning = false
     }
 
@@ -554,14 +711,56 @@ final class CaptureController {
         switch event {
         case .unavailable(let message):
             status = .unavailable(message)
+            ActivityLog.shared.event("capture.unavailable", ["message": message])
         case .failed(let message):
             status = .failed(message)
+            ActivityLog.shared.event("capture.failed", ["message": message])
         case .configured(let config):
             configuration = config
             if case .failed = status {} else { status = .ready }
+            // The format the session actually chose. A clip that comes back at the wrong frame rate,
+            // or a screen that will not record, is explained by this line and nothing else.
+            ActivityLog.shared.event("capture.configured", [
+                "width": config.width, "height": config.height, "fps": config.frameRate,
+                "hfov": config.fieldOfViewDegrees, "codec": config.codec,
+                "warnings": config.warnings.joined(separator: " | "),
+                "thermal": ActivityLog.thermal()])
+            refreshPreviewRect()
         case .running(let running):
+            let changed = running != isRunning
             isRunning = running
-            if running, case .configuring = status { status = .ready }
+            if running {
+                isInterrupted = false
+                healthNote = nil
+                // A session that is running again is usable again. Without this a recovered runtime
+                // error left `status` stuck on `.failed`, which disables the record button for ever.
+                switch status {
+                case .configuring, .failed: if configuration != nil { status = .ready }
+                default: break
+                }
+            }
+            if changed { ActivityLog.shared.event("capture.running", ["running": running, "thermal": ActivityLog.thermal()]) }
+        case .runtimeError(let message, let code, let attempt, let recovered):
+            ActivityLog.shared.event("capture.runtimeError", ["message": message, "code": code,
+                                                              "restartAttempt": attempt, "recovered": recovered,
+                                                              "thermal": ActivityLog.thermal()])
+            if recovered {
+                healthNote = "The camera stopped (\(message)) and was started again."
+            } else {
+                healthNote = "The camera stopped and could not be started again: \(message). Leave this screen and come back, or reopen ArcLab."
+                isRunning = false
+                status = .failed(healthNote ?? message)
+            }
+        case .interrupted(let reason, let code):
+            isInterrupted = true
+            isRunning = false
+            healthNote = interruptionSentence(code)
+            ActivityLog.shared.event("capture.interrupted", ["reason": reason, "code": code,
+                                                             "recording": isRecording, "thermal": ActivityLog.thermal()])
+        case .interruptionEnded:
+            isInterrupted = false
+            healthNote = nil
+            ActivityLog.shared.event("capture.interruptionEnded")
         case .locks(let focus, let exposure, let note):
             focusLocked = focus
             exposureLocked = exposure
@@ -582,11 +781,17 @@ final class CaptureController {
     /// Handed the preview layer by `CaptureView` once it exists, so the rotation coordinator can keep
     /// both the preview and the written file horizon-level.
     func attach(previewLayer layer: AVCaptureVideoPreviewLayer) {
+        // A *different* layer means the preview view was rebuilt (a rotation, a re-presented cover, a
+        // change of view identity). The old coordinator was bound to the layer that has gone, so it
+        // would go on reporting angles for a view nobody can see. Rebind it, never keep the old one.
+        let isNewLayer = previewLayer !== layer
         previewLayer = layer
-        guard rotationCoordinator == nil,
-              let camera = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera], mediaType: .video, position: .back).devices.first
-        else { return }
+        guard isNewLayer || rotationCoordinator == nil else { refreshPreviewRect(); return }
+        rotationObservations = []
+        rotationCoordinator = nil
+        guard let camera = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera], mediaType: .video, position: .back).devices.first
+        else { refreshPreviewRect(); return }
         let coordinator = AVCaptureDevice.RotationCoordinator(device: camera, previewLayer: layer)
         rotationCoordinator = coordinator
         applyRotation()
@@ -607,7 +812,42 @@ final class CaptureController {
         if let connection = previewLayer?.connection, connection.isVideoRotationAngleSupported(previewAngle) {
             connection.videoRotationAngle = previewAngle
         }
+        previewRotationDegrees = previewAngle
         engine?.setCaptureRotationAngle(coordinator.videoRotationAngleForHorizonLevelCapture)
+        // A rotation changes where the picture is without changing the view's bounds, so `layoutSubviews`
+        // never fires for it. This is the only thing that tells the overlay the frame moved.
+        refreshPreviewRect()
+    }
+
+    /// Called by the preview view whenever its bounds change (every rotation, every safe-area change),
+    /// and by `applyRotation`.
+    func previewGeometryChanged() { refreshPreviewRect() }
+
+    private func refreshPreviewRect() {
+        guard let layer = previewLayer else { return }
+        let bounds = layer.bounds
+        guard bounds.width > 1, bounds.height > 1 else { return }
+        // What the layer itself says: the whole video frame (metadata rect 0,0,1,1) mapped into layer
+        // coordinates, through `.resizeAspect` and the connection's rotation.
+        let reported = layer.layerRectConverted(fromMetadataOutputRect: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let finite = reported.origin.x.isFinite && reported.origin.y.isFinite
+            && reported.size.width.isFinite && reported.size.height.isFinite
+        let usable = finite && !reported.isEmpty
+            && reported.width <= bounds.width + 1 && reported.height <= bounds.height + 1
+        let rect: CGRect
+        if usable {
+            rect = reported
+        } else if let configuration {
+            // Before the session has a connection the layer has nothing to convert. Fall back to the
+            // same arithmetic against the format's own dimensions, rotated the way the preview is.
+            rect = CaptureView.videoRect(in: bounds.size, sourceWidth: configuration.width,
+                                         sourceHeight: configuration.height,
+                                         rotationDegrees: previewRotationDegrees)
+        } else {
+            rect = .zero
+        }
+        guard rect != previewVideoRect else { return }
+        previewVideoRect = rect
     }
 
     /// `point` is in the preview layer's coordinates; converted here to the camera's own.
@@ -725,7 +965,8 @@ final class CaptureController {
     /// exact failure the filming protocol warns about. Say so while there is still time to stop.
     private func observeThermalState() {
         updateThermalWarning()
-        NotificationCenter.default.addObserver(
+        guard thermalObserver == nil else { return }
+        thermalObserver = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateThermalWarning() }
