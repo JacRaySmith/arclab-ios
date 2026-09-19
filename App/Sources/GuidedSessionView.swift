@@ -24,6 +24,14 @@ struct GuidedSessionView: View {
     @State private var showEveryNumber = false
     @Environment(\.scenePhase) private var scenePhase
 
+    /// A session an earlier run of the app was in the middle of, handed in by the Today screen.
+    var resume: GuidedCheckpoint?
+    /// What is written to disk after every step, so a process death cannot take this session with it.
+    @State private var checkpoint: GuidedCheckpoint?
+    /// Why the handed-in checkpoint could not be picked up, when it could not be. Shown, never dropped.
+    @State private var resumeProblem: String?
+    @State private var resumeApplied = false
+
     private enum Stage: Int, Comparable {
         case video, spot, rim, analysing, done
         static func < (a: Stage, b: Stage) -> Bool { a.rawValue < b.rawValue }
@@ -44,6 +52,7 @@ struct GuidedSessionView: View {
 
     var body: some View {
         List {
+            if resumeProblem != nil || session.restoredFromCheckpoint { resumeSection }
             videoSection
             if stage >= .spot { spotSection }
             if stage >= .rim { rimSection }
@@ -71,7 +80,8 @@ struct GuidedSessionView: View {
             if phase == .probed, model.sloMoSuspected, !model.isSloMo { model.setSloMo(true) }
             // The ring is looked for as soon as the clip is readable, whether or not the spot has been
             // answered yet, so step 3 usually arrives already drawn.
-            if phase == .probed { findRimIfNeeded() }
+            if phase == .probed { applyResumeIfNeeded() }
+            if phase == .probed, !session.restoredFromCheckpoint { findRimIfNeeded() }
         }
         .onChange(of: spot) { _, chosen in
             guard let chosen else { return }
@@ -79,10 +89,14 @@ struct GuidedSessionView: View {
             band = SpeedBand.from(store.pooled(at: chosen).summary.releaseSpeed, spot: chosen)
             ActivityLog.shared.event("session.spot", ["spot": chosen.rawValue, "band": band != nil,
                                                       "bandN": band?.n, "bandMean": band?.mean, "bandSD": band?.sd])
+            checkpoint?.spot = chosen
+            writeCheckpoint()
             findRimIfNeeded()
         }
         .onChange(of: model.calibration != nil) { _, calibrated in
             if !calibrated { rimConfirmed = false }
+            // The ring is part of the ruler: it goes into the checkpoint the moment it exists.
+            if calibrated { writeCheckpoint() }
         }
         .onChange(of: rimConfirmed) { _, confirmed in
             if confirmed { startIfReady() }
@@ -94,7 +108,7 @@ struct GuidedSessionView: View {
             guard !analysing else { return }
             // After the first pass: if every clean shot fitted gravity off by one and the same scale factor,
             // and exactly one of this phone's video formats explains it, re-run with that format's lens.
-            if !session.lensPassDone, !session.shots.isEmpty,
+            if !session.lensPassDone, !session.restoredFromCheckpoint, !session.shots.isEmpty,
                let p = LensSelection.propose(current: model.hfovDegrees, gFits: session.gravityFits) {
                 ActivityLog.shared.event("lens.proposal", ["current": p.current, "implied": p.impliedHFOV, "medianG": p.medianG, "n": p.n, "match": p.match.hfovDegrees])
                 model.hfovDegrees = p.match.hfovDegrees
@@ -113,6 +127,10 @@ struct GuidedSessionView: View {
             session.resumeAfterInterruption(model: model)
         }
         .onAppear {
+            // Hooked on every appearance, because `SessionModel` is shared with the other screens and
+            // whichever one is in front owns the checkpoint.
+            session.onCheckpoint = { _ in writeCheckpoint() }
+            startResumeIfNeeded()
             if spot == nil, let remembered = ShotSpot(rawValue: lastSpotRaw) { spot = remembered }
             if session.isBusy || !session.shots.isEmpty { rimConfirmed = true }
             startIfReady()
@@ -120,6 +138,101 @@ struct GuidedSessionView: View {
             // carry on, or save what finished. Neither happens twice — both are guarded.
             session.resumeAfterInterruption(model: model)
             autoSaveIfNeeded()
+        }
+    }
+
+    // MARK: The crash checkpoint
+
+    /// A new session begins the moment a clip belongs to it. Written before anything is measured, so
+    /// even "I recorded 40 shots and the app died" comes back as the clip and the spot.
+    private func beginCheckpoint(clip: RecordedClip) {
+        var fresh = GuidedCheckpoint()
+        fresh.flow = "guided"
+        fresh.spot = spot
+        fresh.clipFileName = clip.movieFileName
+        fresh.measuredFrameRate = clip.measuredNominalFrameRate
+        fresh.durationSeconds = clip.durationSeconds
+        fresh.hfovDegrees = clip.videoFieldOfViewDegrees
+        checkpoint = fresh
+        resumeProblem = nil
+        GuidedCheckpointStore.write(fresh)
+        ActivityLog.shared.event("checkpoint.begin", ["flow": "guided", "clip": clip.movieFileName,
+                                                      "spot": spot?.rawValue])
+    }
+
+    private func writeCheckpoint() {
+        guard var current = checkpoint else { return }
+        current.spot = spot
+        current.update(model: model, session: session)
+        checkpoint = current
+        GuidedCheckpointStore.write(current)
+    }
+
+    // MARK: Coming back to a session the app died in the middle of
+
+    private func startResumeIfNeeded() {
+        guard let resume, !resumeApplied else { return }
+        resumeApplied = true
+        checkpoint = resume
+        spot = resume.spot ?? spot
+        autoStarted = true          // never start a fresh scan over a restored one
+        autoRimTried = true
+        rimConfirmed = true
+        resumeProblem = GuidedResume.begin(resume, model: model)
+        if let resumeProblem {
+            ActivityLog.shared.event("checkpoint.resume.blocked", ["why": resumeProblem])
+        }
+    }
+
+    /// The second half of the resume, once the clip has been re-read.
+    private func applyResumeIfNeeded() {
+        guard let resume, resumeApplied, !session.restoredFromCheckpoint, resumeProblem == nil else { return }
+        switch GuidedResume.finish(resume, model: model, session: session) {
+        case .notReady:
+            return
+        case .clipOnly:
+            // Nothing had been measured: the ordinary flow takes it from here.
+            autoStarted = false
+            autoRimTried = false
+            rimConfirmed = false
+            findRimIfNeeded()
+        case .blocked(let why):
+            resumeProblem = why
+            ActivityLog.shared.event("checkpoint.resume.blocked", ["why": why])
+        case .restored(let measured, let queued):
+            writeCheckpoint()
+            if queued > 0 { session.analyseAll() }
+            ActivityLog.shared.event("checkpoint.resume", ["measured": measured, "queued": queued])
+        }
+    }
+
+    private var resumeSection: some View {
+        Section {
+            if let why = resumeProblem {
+                Label(why, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let resume, resume.measuredCount > 0 {
+                    Text("Those \(resume.measuredCount) measured shot\(resume.measuredCount == 1 ? "" : "s") are still on disk in the checkpoint. Nothing here shows them as zeros — they are simply not on this screen.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button(role: .destructive) {
+                    GuidedCheckpointStore.clear(why: "discarded by the shooter after a blocked resume")
+                    checkpoint = nil
+                    resumeProblem = nil
+                } label: {
+                    Label("Discard the unfinished session", systemImage: "trash")
+                }
+            } else if let note = session.restoreNote {
+                Label("Picked up where ArcLab left off.", systemImage: "arrow.clockwise.circle.fill")
+                    .font(.subheadline).foregroundStyle(.green)
+                Text(note)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Resumed")
         }
     }
 
@@ -168,6 +281,7 @@ struct GuidedSessionView: View {
                         autoRimTried = false
                         rimConfirmed = false
                         model.useRecordedClip(recorded)
+                        beginCheckpoint(clip: recorded)
                     }
                 } label: {
                     Label("Record a session now", systemImage: "record.circle")
@@ -184,6 +298,7 @@ struct GuidedSessionView: View {
                             Button {
                                 session.reset(); autoStarted = false; autoRimTried = false; rimConfirmed = false
                                 model.useRecordedClip(r)
+                                beginCheckpoint(clip: r)
                             } label: {
                                 Text(String(format: "%@ · %.0f fps · %.0f s", r.recordedAt.formatted(date: .abbreviated, time: .shortened),
                                             r.measuredNominalFrameRate ?? r.requestedFrameRate, r.durationSeconds ?? 0))
@@ -424,6 +539,13 @@ struct GuidedSessionView: View {
         session.savedSpot = spot
         ActivityLog.shared.event("session.autosaved", ["spot": spot.rawValue, "measured": measured,
                                                        "accepted": saved.accepted, "id": saved.id.uuidString])
+        // Safely in `SessionStore` now. The saved id is written first and the file removed second — on
+        // one serial queue — so a death between the two leaves a checkpoint that knows it is finished
+        // rather than one that would offer the same session again.
+        checkpoint?.savedSessionID = saved.id
+        writeCheckpoint()
+        checkpoint = nil
+        GuidedCheckpointStore.clear(why: "session saved as \(saved.id.uuidString)")
     }
 
     private func undoSave() {

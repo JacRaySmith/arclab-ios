@@ -5,7 +5,9 @@ import simd
 
 /// One shot window found by the whole-clip scan. All times are **file** seconds, the clock the
 /// decoder and every window control in the app use.
-struct ShotWindow: Sendable, Identifiable, Equatable {
+/// `Codable` so the guided flow can write the windows it found into its crash checkpoint: a scan
+/// takes minutes, and losing it to a process death is losing the whole session.
+struct ShotWindow: Sendable, Identifiable, Equatable, Codable {
     var id: Int                      // 1-based, in clip order
     var arrivalFileTime: Double      // the frame on which the ball arrived at the rim
     var start: Double

@@ -26,6 +26,13 @@ final class ActivityLog: @unchecked Sendable {
     }
 
     private init() {
+        // Read the previous run's marker *before* stamping this one, so `app.launch` can say whether
+        // the run before it ended on purpose. A run that ended cleanly wrote "endedCleanly": the
+        // absence of that is the only evidence there is when iOS kills a process without a report.
+        let previous = RunMarker.read()
+        // Stamped before the first event, so nothing on `queue` can race this assignment.
+        marker = RunMarker(startedAt: launch)
+        marker.write()
         event("app.launch", [
             "device": UIDevice.current.model, "system": UIDevice.current.systemVersion,
             "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?",
@@ -33,7 +40,77 @@ final class ActivityLog: @unchecked Sendable {
             "processors": ProcessInfo.processInfo.activeProcessorCount,
             "memoryGB": Double(ProcessInfo.processInfo.physicalMemory) / 1e9,
             "thermal": ActivityLog.thermal(),
+            "previousRunEndedCleanly": previous?.endedCleanly,
+            "previousRunLastScreen": previous?.lastScreen,
+            "previousRunLastEvent": previous?.lastEvent,
+            "previousRunSeconds": previous.map { ($0.lastSeenAt.timeIntervalSince($0.startedAt) * 1000).rounded() / 1000 },
+            "previousRunEndedAt": previous?.lastSeenAt.formatted(.iso8601),
         ])
+        observeAppLifecycle()
+    }
+
+    // MARK: The clean-exit marker
+
+    /// One tiny file rewritten as the app moves through its life, so the *next* launch can say how the
+    /// last one ended. `endedCleanly` is set only by `didEnterBackground` / `willTerminate`; anything
+    /// else — a crash, a jetsam, a watchdog kill, a force-quit from the app switcher — leaves it false.
+    /// It is not a crash report and never pretends to be one: it says "this run did not say goodbye",
+    /// plus the last screen the shooter was on and the last event written.
+    struct RunMarker: Codable, Sendable {
+        var startedAt: Date
+        var lastSeenAt: Date = Date()
+        var endedCleanly = false
+        var lastScreen = "?"
+        var lastEvent = "?"
+
+        static var fileURL: URL {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            let dir = base.appendingPathComponent("ArcLab", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir.appendingPathComponent("run-marker.json")
+        }
+
+        static func read() -> RunMarker? {
+            guard let data = try? Data(contentsOf: fileURL) else { return nil }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try? decoder.decode(RunMarker.self, from: data)
+        }
+
+        func write() {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            guard let data = try? encoder.encode(self) else { return }
+            try? data.write(to: RunMarker.fileURL, options: .atomic)
+        }
+    }
+
+    /// Only ever touched on `queue`, alongside the log writes, so the marker on disk and the last line
+    /// of the log always agree about which event was the last one.
+    private var marker = RunMarker(startedAt: Date())
+    private var markerWrittenAt = Date.distantPast
+
+    private func observeAppLifecycle() {
+        let center = NotificationCenter.default
+        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.willTerminateNotification] {
+            center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                self?.setEndedCleanly(true, why: name == UIApplication.willTerminateNotification ? "terminate" : "background")
+            }
+        }
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.setEndedCleanly(false, why: "active")
+        }
+    }
+
+    private func setEndedCleanly(_ clean: Bool, why: String) {
+        event("app.\(why)")
+        queue.async { [self] in
+            marker.endedCleanly = clean
+            marker.lastSeenAt = Date()
+            marker.write()
+            markerWrittenAt = Date()
+        }
     }
 
     /// Every video format of the back wide camera with its field of view, once per launch — the field of
@@ -196,6 +273,22 @@ final class ActivityLog: @unchecked Sendable {
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
         handle?.write(data)
         handle?.write(Data([0x0A]))
+        updateMarker(with: record)
+    }
+
+    /// Keep the run marker roughly level with the log. A `screen` event rewrites it at once — that is
+    /// the field the next launch reads to say where the app was when it died — and everything else at
+    /// most once every two seconds, so an analysis writing hundreds of events does not write hundreds
+    /// of files.
+    private func updateMarker(with record: [String: Any]) {
+        let name = record["event"] as? String ?? "?"
+        let isScreen = name == "screen"
+        if isScreen, let screen = record["name"] as? String { marker.lastScreen = screen }
+        marker.lastEvent = name
+        marker.lastSeenAt = Date()
+        guard isScreen || Date().timeIntervalSince(markerWrittenAt) > 2 else { return }
+        marker.write()
+        markerWrittenAt = Date()
     }
 }
 

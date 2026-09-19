@@ -24,17 +24,23 @@ struct TodayView: View {
 
     @State private var card: TodayCard = .loading
     @State private var going: PrimaryDestination?
+    /// A session an earlier run of ArcLab was in the middle of when it stopped. Read from disk, never
+    /// from memory: the point of it is that the process it belonged to is gone.
+    @State private var unfinished: GuidedCheckpoint?
 
     /// One destination at a time, so there is a single `navigationDestination` on this screen rather
     /// than two competing `isPresented` ones.
     enum PrimaryDestination: Hashable, Identifiable {
         case block(UUID)
         case guided
+        /// The guided screen, told to pick up an unfinished session rather than start a new one.
+        case resume
         var id: Self { self }
     }
 
     var body: some View {
         List {
+            resumeSection
             cardSection
             primarySection
             secondarySection
@@ -44,19 +50,26 @@ struct TodayView: View {
             switch destination {
             case .guided:
                 GuidedSessionView(model: model, session: session, store: store)
-            case .block:
-                if let open = openBlock {
-                    PracticeBlockView(sessionID: open.session.id, block: open.block,
-                                      practice: practice, doctor: doctor, store: store)
+            case .resume:
+                GuidedSessionView(model: model, session: session, store: store, resume: unfinished)
+            case .block(let id):
+                // Looked up by id rather than taken from `openBlock`, because a resumed block is not
+                // necessarily the next one in the plan.
+                if let found = blockLookup(id) {
+                    PracticeBlockView(sessionID: found.session.id, block: found.block,
+                                      practice: practice, doctor: doctor, store: store,
+                                      resume: unfinished?.practiceBlockID == id ? unfinished : nil)
                 }
             }
         }
         .task(id: refreshKey) { card = makeCard() }
         .onAppear {
+            unfinished = GuidedCheckpointStore.load()
             ActivityLog.shared.event("screen", ["name": "today",
                                                 "savedSessions": store.sessions.count,
                                                 "plan": store.activePlan?.hypothesis,
-                                                "openBlock": openBlock != nil])
+                                                "openBlock": openBlock != nil,
+                                                "unfinished": unfinished?.summaryLine])
         }
     }
 
@@ -157,6 +170,61 @@ struct TodayView: View {
         guard let s = practice.todaysSession, let next = s.nextBlock,
               let index = s.blocks.firstIndex(where: { $0.id == next.id }) else { return nil }
         return (s, next, index + 1)
+    }
+
+    /// Which practice session a block belongs to, by the block's own id.
+    private func blockLookup(_ id: UUID) -> (session: PracticeSession, block: PracticeBlock)? {
+        for s in practice.sessions {
+            if let b = s.blocks.first(where: { $0.id == id }) { return (s, b) }
+        }
+        return nil
+    }
+
+    // MARK: The session that was interrupted
+
+    /// Offered above everything else, because a session that is half measured is worth more than a new
+    /// one and because losing it once already cost a whole evening of filming (2026-09-18).
+    @ViewBuilder private var resumeSection: some View {
+        if let unfinished, unfinished.isWorthResuming {
+            Section {
+                Button {
+                    ActivityLog.shared.event("checkpoint.resume.tapped",
+                                             ["flow": unfinished.flow, "block": unfinished.practiceBlockID?.uuidString,
+                                              "measured": unfinished.measuredCount, "windows": unfinished.windows.count])
+                    if let block = unfinished.practiceBlockID, blockLookup(block) != nil {
+                        going = .block(block)
+                    } else {
+                        going = .resume
+                    }
+                } label: {
+                    primaryLabel(title: "Resume the session you were in",
+                                 subtitle: unfinished.summaryLine.isEmpty
+                                    ? unfinished.startedAt.formatted(date: .abbreviated, time: .shortened)
+                                    : unfinished.summaryLine,
+                                 symbol: "arrow.clockwise.circle")
+                }
+                .primaryAction()
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                if let why = unfinished.resumeObstacle {
+                    Text(why)
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button(role: .destructive) {
+                    GuidedCheckpointStore.clear(why: "discarded from the Today screen")
+                    self.unfinished = nil
+                } label: {
+                    Label("Discard it", systemImage: "trash")
+                }
+                .font(.subheadline)
+            } header: {
+                Text("Unfinished")
+            } footer: {
+                Text("ArcLab stopped part-way through this session. Everything it had already measured was written to disk as it went, so resuming carries on from the last shot it finished — nothing measured is measured twice, and nothing unmeasured is shown as a zero.")
+            }
+        }
     }
 
     private var primarySection: some View {

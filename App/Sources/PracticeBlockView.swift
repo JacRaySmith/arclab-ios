@@ -22,18 +22,26 @@ struct PracticeBlockView: View {
     @State private var scanStarted = false
     @State private var finished = false
 
+    /// A block an earlier run of the app was in the middle of, handed in by the Today screen.
+    var resume: GuidedCheckpoint?
+    @State private var checkpoint: GuidedCheckpoint?
+    @State private var resumeProblem: String?
+    @State private var resumeApplied = false
+
     init(sessionID: UUID, block: PracticeBlock, practice: PracticeStore,
-         doctor: ShotDoctorModel, store: SessionStore) {
+         doctor: ShotDoctorModel, store: SessionStore, resume: GuidedCheckpoint? = nil) {
         self.sessionID = sessionID
         self.practice = practice
         self.doctor = doctor
         self.store = store
+        self.resume = resume
         _current = State(initialValue: block)
     }
 
     var body: some View {
         List {
             briefSection
+            if resumeProblem != nil || session.restoredFromCheckpoint { resumeSection }
             if current.isDone {
                 cardSection
             } else {
@@ -48,6 +56,8 @@ struct PracticeBlockView: View {
             ShotSpeaker.shared.announce(session.lastMeasured, mode: .practice)
         }
         .onAppear {
+            session.onCheckpoint = { _ in writeCheckpoint() }
+            startResumeIfNeeded()
             // The log is the source of truth: a block scored on an earlier visit shows its card.
             if let stored = practice.session(sessionID)?.blocks.first(where: { $0.id == current.id }) {
                 current = stored
@@ -62,12 +72,16 @@ struct PracticeBlockView: View {
             }
         }
         .onChange(of: model.phase) { _, phase in
-            if phase == .probed, model.calibration == nil, !model.rimFinding {
+            if phase == .probed { applyResumeIfNeeded() }
+            if phase == .probed, model.calibration == nil, !model.rimFinding, !session.restoredFromCheckpoint {
                 Task { await model.findRimAutomatically() }
             }
         }
         .onChange(of: model.calibration != nil) { _, calibrated in
-            if calibrated { startScanIfReady() }
+            if calibrated {
+                writeCheckpoint()
+                startScanIfReady()
+            }
         }
         .onChange(of: session.scanning) { _, scanning in
             if !scanning, !session.shots.isEmpty, !session.analysing { session.analyseAll() }
@@ -76,7 +90,7 @@ struct PracticeBlockView: View {
             guard !analysing, !session.shots.isEmpty else { return }
             // Same second pass as the guided flow: if every clean shot fitted gravity off by the same
             // factor and one of this phone's formats explains it, re-run with that format's lens.
-            if !session.lensPassDone,
+            if !session.lensPassDone, !session.restoredFromCheckpoint,
                let p = LensSelection.propose(current: model.hfovDegrees, gFits: session.gravityFits) {
                 ActivityLog.shared.event("lens.proposal", ["current": p.current, "implied": p.impliedHFOV, "medianG": p.medianG, "n": p.n, "match": p.match.hfovDegrees])
                 model.hfovDegrees = p.match.hfovDegrees
@@ -311,6 +325,91 @@ struct PracticeBlockView: View {
             "fps": recorded.measuredNominalFrameRate ?? recorded.requestedFrameRate,
         ])
         model.useRecordedClip(recorded)
+        var fresh = GuidedCheckpoint()
+        fresh.flow = "practice"
+        fresh.spot = current.spot
+        fresh.clipFileName = recorded.movieFileName
+        fresh.measuredFrameRate = recorded.measuredNominalFrameRate
+        fresh.durationSeconds = recorded.durationSeconds
+        fresh.hfovDegrees = recorded.videoFieldOfViewDegrees
+        fresh.practiceSessionID = sessionID
+        fresh.practiceBlockID = current.id
+        checkpoint = fresh
+        resumeProblem = nil
+        GuidedCheckpointStore.write(fresh)
+        ActivityLog.shared.event("checkpoint.begin", ["flow": "practice", "clip": recorded.movieFileName,
+                                                      "spot": current.spot.rawValue, "block": current.id.uuidString])
+    }
+
+    // MARK: The crash checkpoint
+
+    private func writeCheckpoint() {
+        guard var c = checkpoint else { return }
+        c.spot = current.spot
+        c.practiceSessionID = sessionID
+        c.practiceBlockID = current.id
+        c.update(model: model, session: session)
+        checkpoint = c
+        GuidedCheckpointStore.write(c)
+    }
+
+    private func startResumeIfNeeded() {
+        guard let resume, !resumeApplied else { return }
+        resumeApplied = true
+        checkpoint = resume
+        scanStarted = true
+        finished = false
+        resumeProblem = GuidedResume.begin(resume, model: model)
+        if let resumeProblem {
+            ActivityLog.shared.event("checkpoint.resume.blocked", ["flow": "practice", "why": resumeProblem])
+        }
+    }
+
+    private func applyResumeIfNeeded() {
+        guard let resume, resumeApplied, !session.restoredFromCheckpoint, resumeProblem == nil else { return }
+        switch GuidedResume.finish(resume, model: model, session: session) {
+        case .notReady:
+            return
+        case .clipOnly:
+            scanStarted = false
+            if model.calibration == nil, !model.rimFinding { Task { await model.findRimAutomatically() } }
+        case .blocked(let why):
+            resumeProblem = why
+            ActivityLog.shared.event("checkpoint.resume.blocked", ["flow": "practice", "why": why])
+        case .restored(let measured, let queued):
+            writeCheckpoint()
+            if queued > 0 {
+                session.analyseAll()
+            } else {
+                // Everything was already measured before the app stopped: score and save the block now.
+                finishBlock()
+            }
+            ActivityLog.shared.event("checkpoint.resume", ["flow": "practice", "measured": measured, "queued": queued])
+        }
+    }
+
+    @ViewBuilder private var resumeSection: some View {
+        Section {
+            if let why = resumeProblem {
+                Label(why, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(role: .destructive) {
+                    GuidedCheckpointStore.clear(why: "discarded by the shooter after a blocked practice resume")
+                    checkpoint = nil
+                    resumeProblem = nil
+                } label: {
+                    Label("Discard the unfinished block", systemImage: "trash")
+                }
+            } else if let note = session.restoreNote {
+                Label("Picked up where ArcLab left off.", systemImage: "arrow.clockwise.circle.fill")
+                    .font(.subheadline).foregroundStyle(.green)
+                Text(note).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Resumed")
+        }
     }
 
     private func startScanIfReady() {
@@ -331,6 +430,8 @@ struct PracticeBlockView: View {
             current = b
             practice.replace(b, in: sessionID)
             finished = true
+            checkpoint = nil
+            GuidedCheckpointStore.clear(why: "practice block produced no measurable shots")
             return
         }
         finished = true
@@ -349,6 +450,11 @@ struct PracticeBlockView: View {
                                      doctor: doctor, earlierDrillSession: earlier)
         current = scored
         practice.replace(scored, in: sessionID)
+        // Saved id first, file removed second, on one serial queue: see the guided flow's note.
+        checkpoint?.savedSessionID = saved.id
+        writeCheckpoint()
+        checkpoint = nil
+        GuidedCheckpointStore.clear(why: "practice block saved as \(saved.id.uuidString)")
         // Let the plan record which sessions its check and retention actually used.
         doctor.recordPlanSessions()
     }
