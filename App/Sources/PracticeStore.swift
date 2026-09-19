@@ -182,13 +182,13 @@ enum PracticeNames {
     /// are worth showing. Nothing in the UI shows the engine's camelCase identifier.
     static func measure(_ m: PassMeasure) -> (name: String, unit: String, decimals: Int) {
         switch m {
-        case .releaseSpeedSD: return ("release-speed spread (SD)", "m/s", 3)
+        case .releaseSpeedSD: return ("release-speed spread", "m/s", 3)
         case .releaseSpeedSDRatioAcrossDistance: return ("far ÷ near release-speed spread", "×", 2)
         case .entryAngleMeanDegrees: return ("mean entry angle", "°", 1)
         case .depthMeanCm: return ("mean depth past the front rim", "cm", 1)
-        case .depthSDCm: return ("depth spread (SD)", "cm", 1)
+        case .depthSDCm: return ("depth spread", "cm", 1)
         case .lateralMeanCm: return ("mean left–right offset", "cm", 1)
-        case .lateralSDCm: return ("left–right spread (SD)", "cm", 1)
+        case .lateralSDCm: return ("left–right spread", "cm", 1)
         case .dipToReleaseMean: return ("mean rhythm time (lowest wrist → release)", "s", 3)
         case .dipToReleaseChangeAcrossDistance: return ("change in rhythm time across distance", "s", 3)
         case .spinAxisTiltDegrees: return ("spin-axis tilt", "°", 1)

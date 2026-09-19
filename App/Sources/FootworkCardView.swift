@@ -52,7 +52,7 @@ struct FootworkCardView: View {
             }
             Text(m.patternReason).font(.caption).foregroundStyle(.secondary)
             if let first = m.firstFootDown {
-                Text("\(first.rawValue.capitalized) foot down first"
+                Text("\(first.display) foot down first"
                      + (m.firstFootDownIsShootingSide == true ? " — your shooting side." : (m.firstFootDownIsShootingSide == false ? " — your off side." : ".")))
                     .font(.caption)
             }

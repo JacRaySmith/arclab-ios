@@ -130,7 +130,7 @@ struct AskView: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     if let spot = answer.focusSpot {
-                        Text("Answered from your \(spot.rawValue.lowercased()) shots — the spot with the most accepted shots. Spots are never pooled.")
+                        Text("Answered from your \(spot.displayLower) shots — the spot with the most accepted shots. Spots are never pooled.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }

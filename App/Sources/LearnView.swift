@@ -215,11 +215,15 @@ struct LearnModuleView: View {
                         .font(.footnote.monospacedDigit())
                     Text(d.drill.spots.isEmpty
                          ? "At one spot of your choosing — the drill does not name one."
-                         : "Spots: \(d.drill.spots.map(\.rawValue).joined(separator: ", "))")
+                         : "Spots: \(d.drill.spots.spotList)")
                         .font(.footnote)
-                    Text(d.drill.constraint).font(.footnote)
-                    Text(d.drill.schedule).font(.caption).foregroundStyle(.secondary)
-                    Label(d.filmFrom.whatToFilm, systemImage: "video").font(.caption).foregroundStyle(.secondary)
+                    if let card = d.card {
+                        DrillCardView(card: card)
+                    } else {
+                        // Only for a "drill" that is deliberately not one. It still says what it is.
+                        Text(d.drill.constraint).font(.footnote)
+                        Text(d.drill.schedule).font(.caption).foregroundStyle(.secondary)
+                    }
                     Text(d.source).font(.caption2).foregroundStyle(.secondary)
                     if practice != nil {
                         Button {
@@ -245,7 +249,7 @@ struct LearnModuleView: View {
                     PracticeBlockView(sessionID: sessionID, block: block, practice: practice,
                                       doctor: doctor, store: store)
                 } label: {
-                    Label("Record it now: \(block.intendedShots) at \(block.spot.rawValue)",
+                    Label("Record it now: \(block.intendedShots) at \(block.spot.display)",
                           systemImage: "play.circle.fill")
                 }
                 NavigationLink {
@@ -271,7 +275,7 @@ struct LearnModuleView: View {
         addedBlock = added.first
         addedNote = added.isEmpty
             ? "The drill could not be added to today's session."
-            : "Added \(added.count) block\(added.count == 1 ? "" : "s") to today's plan: \(added.map { "\($0.intendedShots) at \($0.spot.rawValue)" }.joined(separator: ", "))."
+            : "Added \(added.count) block\(added.count == 1 ? "" : "s") to today's plan: \(added.map { "\($0.intendedShots) at \($0.spot.display)" }.joined(separator: ", "))."
     }
 
     // MARK: Done
@@ -288,10 +292,18 @@ struct LearnModuleView: View {
                         DoctorGradeBadge(grade: c.grade)
                     }
                     if let check = c.check {
-                        Text("\(PracticeNames.measure(check.measure).name) · \(check.description) · at least \(check.minimumN) counted shots, or the check says it cannot tell.")
+                        Text(GateWords.sentence(check))
                             .font(.caption2).foregroundStyle(.secondary)
                     } else if let why = c.unavailableReason {
                         Text(why).font(.caption2).foregroundStyle(.orange)
+                    }
+                    if let precise = c.precise {
+                        DisclosureGroup("The exact version") {
+                            Text(precise)
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.caption2)
                     }
                     Text(c.source).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -344,7 +356,7 @@ struct LearnModuleView: View {
             } else {
                 ForEach(blocks) { b in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(b.drillName ?? "Drill") · \(b.intendedShots) at \(b.spot.rawValue)\(b.acceptedShots.map { " · \($0) counted" } ?? "")")
+                        Text("\(b.drillName ?? "Drill") · \(b.intendedShots) at \(b.spot.display)\(b.acceptedShots.map { " · \($0) counted" } ?? "")")
                             .font(.subheadline)
                         if let text = b.measureText { Text(text).font(.caption) }
                         if let c = b.check {

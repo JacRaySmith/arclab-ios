@@ -49,7 +49,7 @@ struct PracticeBlockView: View {
                 if model.clip != nil { analysisSection }
             }
         }
-        .navigationTitle("\(PracticeNames.role(current.role)) · \(current.spot.rawValue)")
+        .navigationTitle("\(PracticeNames.role(current.role)) · \(current.spot.display)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { ShotSpeakerToggle(mode: .practice) } }
         .onChange(of: session.lastMeasured?.completionOrder) { _, _ in
@@ -104,11 +104,29 @@ struct PracticeBlockView: View {
 
     // MARK: The brief — what to do, and the one cue
 
+    /// The drill this block was built from, when it was built from one. Warm-up and retention
+    /// blocks are not drills and get the instruction they were written with.
+    private var drillCard: DrillCard? {
+        DrillDirectory.card(forBlockNamed: current.drillName, instruction: current.instruction)
+    }
+
+    // The block card is read from the tripod, five metres away, with a ball in your hands. So it
+    // shows one instruction at a size that can be read from there, plus the shot count. Everything
+    // else about the drill — setup, what counts, what the app is watching, when it is done, why —
+    // is one tap down, where it belongs while you are shooting.
     private var briefSection: some View {
         Section {
-            LabeledContent("Spot", value: current.spot.rawValue)
-            LabeledContent("Shots", value: "\(current.intendedShots)")
-            Text(current.instruction).font(.subheadline)
+            if let card = drillCard {
+                DrillDoThisView(card: card, shots: current.intendedShots, spot: current.spot.display)
+                DisclosureGroup("The whole drill") {
+                    DrillCardView(card: card)
+                }
+                .font(.subheadline)
+            } else {
+                LabeledContent("Spot", value: current.spot.display)
+                LabeledContent("Shots", value: "\(current.intendedShots)")
+                Text(current.instruction).font(.subheadline)
+            }
             // When this block was proposed by the day's sequence, it says which number asked for it
             // and what recording it will let ArcLab tell.
             if let p = practice.session(sessionID)?.proposal(forBlock: current.id) {
@@ -165,7 +183,7 @@ struct PracticeBlockView: View {
         } header: {
             Text("Record the block")
         } footer: {
-            Text("Phone on the tripod at the side, the whole block in one clip. The lens and the frame rate come from the recording, the ring is found on the first frame that shows it, and the block saves itself at \(current.spot.rawValue) when the analysis ends — there is no save button to forget.")
+            Text("Phone on the tripod at the side, the whole block in one clip. The lens and the frame rate come from the recording, the ring is found on the first frame that shows it, and the block saves itself at \(current.spot.displayLower) when the analysis ends — there is no save button to forget.")
         }
     }
 
@@ -254,7 +272,7 @@ struct PracticeBlockView: View {
             if let summary = current.summaryLine {
                 Text(summary).font(.caption).foregroundStyle(.secondary)
             }
-            LabeledContent("Saved", value: "\(current.acceptedShots ?? 0) counted of \(current.measuredShots ?? 0) measured, at \(current.spot.rawValue)")
+            LabeledContent("Saved", value: "\(current.acceptedShots ?? 0) counted of \(current.measuredShots ?? 0) measured, at \(current.spot.displayLower)")
                 .font(.caption)
             if let id = current.savedSessionID, store.sessions.contains(where: { $0.id == id }) {
                 NavigationLink { EditSessionView(store: store, sessionID: id) } label: {
