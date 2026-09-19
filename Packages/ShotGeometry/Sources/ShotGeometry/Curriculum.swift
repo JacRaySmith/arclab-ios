@@ -36,14 +36,32 @@ public struct CurriculumDrill: Sendable {
     /// blocked-then-random schedule — have a real design behind them.
     public var methodGrade: ShotEvidenceGrade
     public var source: String
+    /// Anything precise that belongs to *this drill in the curriculum* rather than to the drill
+    /// itself — the schedule research, what the module cannot see yet. Merged into the card's
+    /// `detail` behind the plain lines. Added 2026-09-19 with the plain-language card.
+    public var detail: String?
+
+    /// The five plain lines, with the camera line folded into Setup and the method grade folded
+    /// into Why, so Learn renders exactly what Plan and the block card render.
+    public var card: DrillCard? {
+        guard var c = drill.plainCard else { return nil }
+        c.setup = "\(c.setup) \(filmFrom.whatToFilm)"
+        if !c.why.isEmpty, !c.why.contains("Grade \(methodGrade.letter)") {
+            c.why = "\(c.why) Grade \(methodGrade.letter) for this way of practising: \(methodGrade.meaning)."
+        }
+        c.detail = [c.detail, detail].compactMap { $0 }.joined(separator: " ")
+        if c.detail?.isEmpty == true { c.detail = nil }
+        return c
+    }
 
     public init(drill: Drill, purpose: String, filmFrom: ClipRequirement,
-                methodGrade: ShotEvidenceGrade, source: String) {
+                methodGrade: ShotEvidenceGrade, source: String, detail: String? = nil) {
         self.drill = drill
         self.purpose = purpose
         self.filmFrom = filmFrom
         self.methodGrade = methodGrade
         self.source = source
+        self.detail = detail
     }
 }
 
@@ -54,23 +72,31 @@ public struct DoneCheck: Sendable {
     /// The gate in the app's own check type, so `FixLibrary.check` scores a module exactly the way it
     /// scores a plan. Nil when nothing ArcLab measures today can close this gate.
     public var check: PassCheck?
-    /// Why there is no gate, when there is none. Never empty when `check` is nil.
+    /// Why there is no gate, when there is none. Never empty when `check` is nil. Plain words: it
+    /// is the sentence a shooter reads instead of a number.
     public var unavailableReason: String?
+    /// The precise version of the gate, for a gate that has no `PassCheck` to carry one. Shown on
+    /// tap behind `plainWords`. Added 2026-09-19 with the plain-language pass.
+    public var detail: String?
     /// The grade of the evidence that this measure is worth passing.
     public var grade: ShotEvidenceGrade
     public var source: String
 
     public init(plainWords: String, check: PassCheck? = nil, unavailableReason: String? = nil,
-                grade: ShotEvidenceGrade, source: String) {
+                detail: String? = nil, grade: ShotEvidenceGrade, source: String) {
         self.plainWords = plainWords
         self.check = check
         self.unavailableReason = unavailableReason
+        self.detail = detail
         self.grade = grade
         self.source = source
     }
 
     /// True when the app can actually score this gate from a saved session today.
     public var isMeasurableToday: Bool { check != nil }
+
+    /// The exact statement behind the plain one, wherever it lives.
+    public var precise: String? { check?.detail ?? detail }
 }
 
 /// A fault the coach sees, and the fingerprint it leaves in the app's numbers.
@@ -172,6 +198,13 @@ public enum Curriculum {
     /// `healthy-shot-model-2026-09-14.md` §4. Arithmetic, so grade A.
     static let notWiderRatio = 1.43
 
+    /// `notWiderRatio` said the way a shooter reads it, because "÷ 1.43" is not an instruction.
+    /// Narrowing to 1 ÷ 1.43 of last session's spread **is** a 30 % narrowing, and widening to
+    /// 1.43 × it **is** 43 % wider. Both are the same arithmetic as the gate they describe, so a
+    /// change to `DoctorStats.detectableSDRatio` moves the words too. Asserted in the tests.
+    static let narrowByPercent = Int(((1 - 1 / notWiderRatio) * 100).rounded())   // 30
+    static let widerByPercent = Int(((notWiderRatio - 1) * 100).rounded())        // 43
+
     /// The published make-depth band, 25–28 cm past the front rim, in centimetres.
     /// Daly-Grafstein & Bornn 2019 JQAS over >50 000 NBA three-point trajectories.
     static let depthBandCm = (low: ShotDoctor.publishedMakeDepthBand.low * 100,
@@ -200,16 +233,28 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "Footprint holds", reps: 10, sets: 4, spots: [.freeThrow],
-                             constraint: "Chalk or tape the two marks your feet start on. A shot counts only if both feet land back inside the marks and you hold the finish until the ball reaches the rim.",
-                             schedule: "Blocked for the first two sessions, then mixed with another spot — blocked practice wins during acquisition and loses on retention and transfer (Shamshiri 2025, ηp² = 0.24)."),
+                             constraint: "A shot counts only if both feet land back inside your marks and you are still holding your finish when the ball reaches the ring.",
+                             schedule: "Stay at this one spot for your first two sessions. After that, shuffle in a second spot.",
+                             setup: "Free throws. Chalk or tape two marks where your feet start. 10 shots a set, 4 sets.",
+                             doThis: "Land back on your own two marks and hold the finish until the ball reaches the ring.",
+                             watches: "How far past the front of the ring your shots pass, and how much that varies.",
+                             doneWhen: "Next session that spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side. Below 25 counted shots the app says it cannot tell yet.",
+                             why: "A shot that starts from the same patch of floor every time is the only shot the app can read at all.",
+                             detail: "Gate: depth SD at the finding spot, next session at or below this session's ÷ the detectable SD ratio exp(1.96/√n), which is 1.43 at n = 30. Minimum 25 counted shots. Schedule: blocked practice wins during acquisition and loses on retention and transfer (Shamshiri 2025, ηp² = 0.24). Knudson 1993 JOPERD: balanced stance, minimise horizontal COM travel."),
                 purpose: "Make the shot repeat from the same place, so every later measurement is of the shot and not of where you were standing.",
                 filmFrom: .sideView,
                 methodGrade: .c,
                 source: "Knudson 1993 JOPERD six teaching points (balanced stance, minimise horizontal COM travel) — coaching consensus with a rationale, no controlled measurement. The schedule is Shamshiri et al. 2025 (grade B, 84 novices, 3 days)."),
             CurriculumDrill(
                 drill: Drill(name: "Hold the look", reps: 10, sets: 3, spots: [],
-                             constraint: "Eyes stay on the back of the ring through the follow-through. A shot where you track the ball out of your hand does not count, whatever it does at the rim.",
-                             schedule: "Blocked."),
+                             constraint: "A shot counts only if your eyes stayed on the ring the whole way. If you watched the ball leave your hand it does not count, whatever it does at the ring.",
+                             schedule: "One spot, all three sets, in the same session.",
+                             setup: "Any one spot — this drill does not name one. 10 shots a set, 3 sets.",
+                             doThis: "Put your eyes on the back of the ring before you start and leave them there until the ball lands.",
+                             watches: "How far your head travels between the lowest point of the ball and the moment it leaves your hand.",
+                             doneWhen: "There is no pass mark here. Nobody has published a normal range for head movement, so the app shows it as your own trend across sessions and never scores it.",
+                             why: "Expert shooters hold their head and eyes steadier than beginners do, and the head is the part of balance a camera can actually see.",
+                             detail: "Head displacement between dip and release, in pixels from a fixed tripod, normalised by your own height. No published reference range exists in any unit, and two camera positions give two different numbers (healthy-shot-model-2026-09-14.md §2.4, §7). Ripoll et al. 1986 Human Movement Science; Lebeau et al. 2016 quiet-eye meta-analysis — large effects on weak designs, and gaze is not measurable from a tripod."),
                 purpose: "Stop the head from leading the shot, which is the part of 'balance' a camera can actually see.",
                 filmFrom: .closeForm,
                 methodGrade: .b,
@@ -217,55 +262,58 @@ public enum Curriculum {
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Your front-to-back spread at the spot you practise narrows, and the narrowing is bigger than what this many shots could produce by chance.",
+                plainWords: "Your shots stop spreading out front to back — next session's spread is clearly tighter than this session's.",
                 check: PassCheck(measure: .depthSDCm, scope: .findingSpot, target: .narrowByDetectableRatio,
-                                 description: "next session's crossing-depth SD at or below this session's ÷ the detectable ratio",
-                                 minimumN: 25),
+                                 description: "next session's front-to-back spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side",
+                                 minimumN: 25,
+                                 detail: "depthSDCm at the finding spot, next session at or below this session's ÷ the detectable SD ratio exp(1.96/√n) — 1.43 at n = 30, so a \(narrowByPercent) % narrowing. At least 25 counted shots, or the check reports that it cannot tell."),
                 grade: .a,
                 source: "Depth SD is the observable consequence of release-speed SD, which is the strongest published correlate of shooting percentage (Slegers, Lee & Wong 2021 JSSM, r = −0.96 with 3P%). The detectable-ratio floor is arithmetic (`DoctorStats.detectableSDRatio`)."),
             DoneCheck(
-                plainWords: "Your head stops moving between the dip and the release.",
-                unavailableReason: "Head movement is measured in pixels from a fixed tripod, has no published reference range in any unit, and is not comparable between camera positions. It is reported as your own trend across sessions and never scored, so it cannot close this module.",
+                plainWords: "Your head stops travelling between the start of the shot and the release.",
+                unavailableReason: "Head movement is measured in pixels from a tripod and there is no published range to compare it against, so two camera positions give two different numbers. The app shows it as your own trend across sessions and never scores it, which means it cannot finish this module.",
+                detail: "headStabilityNormalised is reported, never gated: no published reference range exists in any unit ArcLab can measure (healthy-shot-model-2026-09-14.md §2.4, §7).",
                 grade: .b,
                 source: "healthy-shot-model-2026-09-14.md §2.4 and §7 ('metrics that need better tracking before they are shown at all')."),
             DoneCheck(
-                plainWords: "Your shot does not drift from the first set of the session to the last.",
-                unavailableReason: "The end-to-end change across a session is produced by the shot doctor's over-session trend read-out, not by the pass-check reader, so it is shown as a trend and cannot be used as a module gate yet.",
+                plainWords: "Your shot does not change from the first set of the session to the last.",
+                unavailableReason: "The change across a whole session is shown on your results as a trend rather than as a pass mark, so it cannot finish a module. Compare your first set with your last one instead.",
+                detail: "depthTotalChangeOverSession comes from the shot doctor's over-session read-out, not from the pass-check reader. Textbook Ch 15 §15.3.4: report the total change across the session, never a slope and never a p-value.",
                 grade: .a,
                 source: "Textbook Ch 15 §15.3.4 (report the total change across the session, not a slope and not a p-value). That drift can happen is established (Bourdas et al. 2024); that it happens to you is measured, never assumed (Slawinski et al. 2018 found none in elite U18s)."),
         ],
         faults: [
             CurriculumFault(
                 name: "Drifting or fading out of the shot",
-                howItShowsInNumbers: "A left–right mean that sits off centre, and a left–right SD wider than the same shooter's static sets. Only a behind-the-shooter clip can see it; from the side it is invisible.",
+                howItShowsInNumbers: "Your shots sit off to one side on average, and they scatter more left and right than they do on your own standing-still sets. Only a clip filmed from behind you can see this; from the side it is invisible.",
                 hypothesis: .lateralAimBias,
                 grade: .c,
                 sources: ["Knudson 1993 JOPERD: minimise horizontal COM travel — consensus with a rationale, no controlled measurement.",
                           "That the *variance* rather than the mean is what predicts is grade A: Daly-Grafstein & Bornn 2020 JSA."]),
             CurriculumFault(
                 name: "Head moving through the shot",
-                howItShowsInNumbers: "Head displacement between dip and release, in pixels, on a close waist-up clip. It has no published range, so only your own trend across sessions can be read — a number here is never a pass or a fail.",
+                howItShowsInNumbers: "How far your head travels between the start of the shot and the release, in pixels, on a close waist-up clip. It has no published range, so only your own trend across sessions can be read — a number here is never a pass or a fail.",
                 hypothesis: .headInstability,
                 grade: .b,
                 sources: ["Ripoll et al. 1986 Human Movement Science (small n, no effect size).",
                           "Lebeau et al. 2016 quiet-eye meta-analysis: large effects on weak designs, and gaze is not measurable from a tripod."]),
             CurriculumFault(
                 name: "Stance too wide (or too narrow)",
-                howItShowsInNumbers: "Nothing. Stance width would come from the body model in metres, and body metres are in ArcLab's untrusted class until the metre scale is validated against the rim calibration.",
+                howItShowsInNumbers: "Nothing. Stance width would have to come from the body model in metres, and ArcLab does not trust its body measurements in metres until that scale has been checked against the ring.",
                 hypothesis: nil,
                 grade: .b,
                 sources: ["Cabarkapa, Cabarkapa & Fry 2026: proficient three-point shooters had a *narrower* stance than non-proficient (27.4 vs 34.3 cm), which is the opposite direction to the usual 'shoulder width or wider' coaching. Between-group, recreational sample, n = 24."]),
             CurriculumFault(
                 name: "\"You must be perfectly square to the rim\"",
-                howItShowsInNumbers: "Nothing measurable. There is no published squareness range at all, and ArcLab's 3-D shoulder-line yaw is refused from a near-side view and noisy from the others. Only your own shot-to-shot repeatability of it could ever be reported.",
+                howItShowsInNumbers: "Nothing measurable. Nobody has published a range for how square is square enough, and the app refuses the shoulder angle outright from a near-side view and calls it noisy from the others. Only your own shot-to-shot repeatability could ever be reported.",
                 hypothesis: .shoulderSquareness,
                 grade: .d,
                 sources: ["healthy-shot-model-2026-09-14.md §2.5 and row 18: no published range exists; 'square to the rim' is coaching lore stated as a fact.",
                           "Cabarkapa et al. 2022: excellent and good professionals showed no kinematic differences at all — the grade-A null against importing any posture target."]),
         ],
         openQuestions: [
-            "Head stability needs a fixed tripod and a pixel-to-scale note before it can be compared across sessions; until then the module's own best gate is the depth-SD consequence, not the cause.",
-            "Foot contacts, stance width and landing position are being built in Track C (`docs/DESIGN-FOOTWORK-2026-09-15.md`). When they land, this module gets a gate on its own subject instead of on its consequence.",
+            "Head stillness needs a phone that does not move and a note of the scale before two sessions can be compared. Until then this module is finished on its consequence — your front-to-back spread — rather than on its cause.",
+            "Foot contacts, stance width and where you land are being built now (`docs/DESIGN-FOOTWORK-2026-09-15.md`). When they arrive, this module gets a pass mark on its own subject instead of on its consequence.",
         ])
 
     // MARK: 2 — Footwork into the shot
@@ -291,16 +339,28 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "Same-feet catch and shoot", reps: 10, sets: 4, spots: [.freeThrow, .elbow],
-                             constraint: "Self-toss or a passer, and two chalk marks. Every shot starts and ends on the marks, and the ball leaves before the feet move again.",
-                             schedule: "Blocked by spot for the first two sessions, then the two spots shuffled."),
+                             constraint: "A shot counts only if you started and finished on your two marks and the ball left before your feet moved again.",
+                             schedule: "Stay at the first spot for two sessions, then shuffle the two spots.",
+                             setup: "Free throws and the elbow. Two chalk marks for your feet, and a passer or a self-toss. 10 shots a set, 4 sets.",
+                             doThis: "Have both feet on your marks and pointed at the ring before the ball reaches your hands.",
+                             watches: "How far left or right of the middle of the ring your shots pass.",
+                             doneWhen: "Next session your average left-right miss sits inside 3 cm either side of the middle, over at least 20 counted shots.",
+                             why: "Arriving the same way every time stops your feet from being a source of scatter — and the one study that compared foot placements found no accuracy difference at all, so what is trained here is the repeat, not a style.",
+                             detail: "Gate: lateralMeanCm inside ±3 cm at the finding spot, minimum 20 counted shots; the ±11 cm of ring tolerance either side of the ball is exact geometry. The Sport Journal foot-placement study, 11 NCAA Division I women: no significant effect of foot placement on accuracy (grade B for the null). Schedule: blocked first, then shuffled (Shamshiri 2025, ηp² = 0.24)."),
                 purpose: "Make the arrival repeat, so the footwork stops being a source of spread.",
                 filmFrom: .behindShooter,
                 methodGrade: .c,
                 source: "Coaching consensus. The one measured test of stance — 11 NCAA Division I women, dominant-staggered vs parallel vs cross-dominant — found no significant effect of foot placement on accuracy, though players favoured the dominant staggered stance (The Sport Journal, foot-placement study, grade B for the null)."),
             CurriculumDrill(
                 drill: Drill(name: "One-two ladder", reps: 8, sets: 6, spots: [.elbow, .midRange],
-                             constraint: "Step into every shot with the same foot first. A repetition where the other foot lands first does not count, whatever the shot does — the graded thing is that it repeated, not which foot it was.",
-                             schedule: "Blocked at the near spot until the order repeats, then alternating spots."),
+                             constraint: "A shot counts only if the same foot landed first. If the other foot goes down first it does not count, whatever the shot does — what is graded is that it repeated, not which foot it was.",
+                             schedule: "Stay at the near spot until the order repeats itself, then alternate the two spots.",
+                             setup: "The elbow and mid-range. 8 shots a set, 6 sets.",
+                             doThis: "Step into every shot with the same foot first.",
+                             watches: "How much your shots scatter left and right, against the same spot standing still.",
+                             doneWhen: "There is no pass mark for the step itself — the app cannot see your feet land yet. What it can score is the left-right scatter this drill is meant to shrink.",
+                             why: "No study picks a step order, so the only defensible target is that yours repeats.",
+                             detail: "Which foot should land first is coaching folklore on both sides — the 1-2 and the hop are both taught as correct, and no peer-reviewed comparison was found (searched 2026-09-15). Foot contacts, step order and gather time are Track C (`docs/DESIGN-FOOTWORK-2026-09-15.md`) and are not scored today."),
                 purpose: "Fix the step order as *yours* rather than as a prescribed one, because no published evidence picks an order.",
                 filmFrom: .behindShooter,
                 methodGrade: .d,
@@ -308,56 +368,59 @@ public enum Curriculum {
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Filmed from behind, your mean left–right offset at the rim sits inside ±3 cm.",
+                plainWords: "Filmed from behind, your shots average within 3 cm either side of the middle of the ring.",
                 check: PassCheck(measure: .lateralMeanCm, scope: .findingSpot, target: .insideBand(low: -3, high: 3),
-                                 description: "next session's mean left–right offset inside ±3 cm, filmed from behind",
-                                 minimumN: 20),
+                                 description: "next session's average left-right miss sits inside 3 cm either side of the middle, filmed from behind",
+                                 minimumN: 20,
+                                 detail: "lateralMeanCm at the finding spot inside ±3 cm, minimum 20 counted shots. Daly-Grafstein & Bornn 2019/2020: the mean offset is near zero in professionals, and contests raise lateral variance 38 % without moving the mean. The ±11 cm tolerance either side of the ball is exact ring geometry."),
                 grade: .a,
                 source: "Daly-Grafstein & Bornn 2019/2020: the mean offset is near zero in professionals, and contests raise lateral *variance* 38 % without moving the mean. The ±11 cm tolerance either side of the ball is exact ring geometry. Reused verbatim from `FixLibrary`'s lateral-aim package."),
             DoneCheck(
-                plainWords: "Your left–right spread narrows by more than this many shots could produce by chance.",
+                plainWords: "Your shots stop scattering left and right — next session's side-to-side spread is clearly tighter.",
                 check: PassCheck(measure: .lateralSDCm, scope: .findingSpot, target: .narrowByDetectableRatio,
-                                 description: "next session's left–right SD at or below this session's ÷ the detectable ratio",
-                                 minimumN: 25),
+                                 description: "next session's left-right spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side",
+                                 minimumN: 25,
+                                 detail: "lateralSDCm at the finding spot, next session at or below this session's ÷ exp(1.96/√n) — 1.43 at n = 30, so a \(narrowByPercent) % narrowing. Slegers & Love 2022: spin-axis SD correlated r = 0.80 with lateral accuracy while mean misalignment did not."),
                 grade: .a,
                 source: "Slegers & Love 2022: spin-axis SD correlated r = 0.80 with lateral accuracy while mean misalignment did not — consistency is the signal. Detectable-ratio floor is arithmetic."),
             DoneCheck(
-                plainWords: "Your step order, gather time and landing position repeat.",
-                unavailableReason: "ArcLab does not measure foot contacts yet. Step order, stance width, gather time (last contact → release) and lateral drift are being built in Track C (`docs/DESIGN-FOOTWORK-2026-09-15.md`), and stance width in metres from the body model stays in the untrusted class until the metre scale is validated. Nothing here is scored until those exist.",
+                plainWords: "Your step repeats: same foot first, same timing, no sliding sideways.",
+                unavailableReason: "ArcLab cannot see your feet land yet. Step order, stance width, the time from your last step to the release and any sideways slide are all being built now, and stance width in metres is not trusted until that scale has been checked against the ring. Nothing here is scored until they arrive.",
+                detail: "Track C (`docs/DESIGN-FOOTWORK-2026-09-15.md`); healthy-shot-model-2026-09-14.md §7 — body measurements in metres are the unreliable class.",
                 grade: .c,
                 source: "healthy-shot-model-2026-09-14.md §7 (body metres are the unreliable class); `docs/PLAN-1.1-2026-09-15.md` Track C."),
         ],
         faults: [
             CurriculumFault(
                 name: "Fading or drifting sideways into the shot",
-                howItShowsInNumbers: "A left–right mean off centre that repeats in the same direction, from a behind-the-shooter clip. A side view cannot see it and says so.",
+                howItShowsInNumbers: "Your shots average off to one side, the same side each time, on a clip filmed from behind. A side view cannot see it and says so.",
                 hypothesis: .lateralAimBias,
                 grade: .b,
                 sources: ["Daly-Grafstein & Bornn 2020 JSA: NBA contests raised left–right variance 38 % without biasing direction — disturbance shows in spread first.",
                           "That drifting specifically causes the offset is a coaching inference, grade C."]),
             CurriculumFault(
                 name: "Different feet every repetition",
-                howItShowsInNumbers: "Left–right SD wider on catch-and-shoot blocks than on the same shooter's stand-still blocks at the same spot, recorded as two blocks and compared.",
+                howItShowsInNumbers: "Your shots scatter more left and right on catch-and-shoot sets than on your own standing-still sets at the same spot — recorded as two sets and compared.",
                 hypothesis: .lateralVariability,
                 grade: .c,
                 sources: ["No published study compares repeatable against variable step order. The claim that spread follows from it is coaching consensus; what ArcLab can do is measure your two blocks."]),
             CurriculumFault(
                 name: "Drifting forward into the rim",
-                howItShowsInNumbers: "Mean crossing depth past the 25–28 cm band, or a release distance that shortens between blocks at the same nominal spot.",
+                howItShowsInNumbers: "Your shots pass deeper than 28 cm past the front of the ring on average, or you keep creeping closer to the ring between sets at what is meant to be the same spot.",
                 hypothesis: .depthBiasLong,
                 grade: .c,
                 sources: ["The depth band itself is grade A (Daly-Grafstein & Bornn 2019). That travelling forward is what moved it is a coaching inference on your own data."]),
             CurriculumFault(
                 name: "\"The hop is quicker\" / \"the 1-2 is more balanced\"",
-                howItShowsInNumbers: "Nothing, today. Coaches teach both as the correct answer; no peer-reviewed kinematic comparison was found, and the one measured stance study found no accuracy difference between placements.",
+                howItShowsInNumbers: "Nothing, today. Coaches teach both as the right answer, nobody has compared them, and the one study that did compare foot placements found no accuracy difference.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["Dr Dish Basketball coaching blog, '1-2 vs. The Hop' — a summary of the coaching argument, not evidence (https://blog.drdishbasketball.com/basketball-shooting-footwork-1-2-vs.-the-hop).",
                           "The Sport Journal, 'The Effect of Foot Placement on the Jump Shot Accuracy of NCAA Division I Basketball Players': 11 D-I women, no significant effect of foot placement on accuracy (grade B for the null, practitioner journal, small n)."]),
         ],
         openQuestions: [
-            "Left–right is the only channel that sees footwork today, and it needs a behind-the-shooter clip. On a side view this module cannot be scored at all.",
-            "No off-the-dribble footage exists yet, so the footwork metrics Track C is building will first be tested on catch and free-throw timelines.",
+            "Left and right is the only thing that sees footwork today, and it needs the phone behind you. On a side view this module cannot be scored at all.",
+            "Nothing has been filmed off the dribble yet, so the foot measurements being built will be tested on catch and free-throw clips first.",
         ])
 
     // MARK: 3 — The dip and the rhythm
@@ -383,16 +446,28 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "Metronome dip", reps: 8, sets: 8, spots: [],
-                             constraint: "Shoot to a metronome set to your own near-spot dip→release time. The shot leaves on the second click, from every distance.",
-                             schedule: "Blocked, near spot first, then the far spot at the same tempo."),
+                             constraint: "A shot counts only if it left on the second click. Set the metronome to your own near-spot time from the bottom of the dip to the release, and keep that same beat from every distance.",
+                             schedule: "Near spot first, every set, then the far spot on the same beat.",
+                             setup: "One near spot and one far spot, and a metronome on your watch or phone. 8 shots a set, 8 sets.",
+                             doThis: "Let the ball sit at the bottom of the dip for one click, then send it on the next.",
+                             watches: "The time from the lowest point of the ball to the ball leaving your hand, and how much that time changes when you step back.",
+                             doneWhen: "Your far-spot time moves at least 0.05 s back towards your near-spot time, over at least 20 counted shots.",
+                             why: "Holding one beat stops you hurrying the long shots — and since two studies disagree about whether quicker or slower is better, the only honest target is your own tempo.",
+                             detail: "Gate: dipToReleaseChangeAcrossDistance, far spot moving at least 0.05 s toward the near-spot value, minimum 20 counted shots. There is no published reference range for dip-to-release in any population, so the target is your own near-spot tempo and 0.05 s is the smallest move the measure resolves at these counts. Cabarkapa et al. 2023: proficient shooters moved slower and lower in preparation (knee peak 212.9 vs 269.4 °/s, ES 1.04). Botsi et al. 2024: higher-level U18s released 12.5 % faster."),
                 purpose: "Hold one tempo across distances instead of hurrying the far ones.",
                 filmFrom: .sideView,
                 methodGrade: .c,
                 source: "Reused from `FixLibrary`'s rushed-preparation package. Cabarkapa et al. 2023 found proficient shooters moved slower and lower in preparation (knee peak 212.9 vs 269.4 °/s, ES 1.04) with no release-phase differences; Botsi et al. 2024 found higher-level U18s released 12.5 % *faster*. The two pull opposite ways, so only your own consistency is read — the metronome method itself is untested."),
             CurriculumDrill(
                 drill: Drill(name: "Dip / no-dip A-B", reps: 10, sets: 6, spots: [.freeThrow, .midRange],
-                             constraint: "Alternate sets: one with your normal dip, one with the ball starting at the set point and going straight up. Record each set as its own block so the comparison is set against set.",
-                             schedule: "Alternating sets — this is a within-you trial, which is the design the dip evidence came from."),
+                             constraint: "A set counts only if the whole set was shot the same way. Record each set on its own so the two can be compared set against set.",
+                             schedule: "Alternate: one set with the dip, one set without, and keep alternating.",
+                             setup: "Free throws and mid-range. 10 shots a set, 6 sets — three with a dip, three without.",
+                             doThis: "On dip sets take the ball down before it goes up; on the other sets start it at your set point and go straight up.",
+                             watches: "How many went in and how far past the front of the ring your shots passed, one kind of set against the other.",
+                             doneWhen: "Done when you have three sets each way at the same spot and the app can show you which way your own numbers went. There is no pass mark: the answer is whichever way your own sets fall.",
+                             why: "Elite shooters gained 7–9 % accuracy with the dip in a trial run on each shooter individually, which is exactly why you run the same trial on yourself.",
+                             detail: "Penner 2021 Front Psychol: 36 elite males, within-subject with and without a dip at four distances (3.125–6.75 m), 7–9 % accuracy gain, F(1,17) = 27.6 and 53.1, p < 0.001. Unblinded, single-session and acute, with no retention test — which is why this ships as your own A-B rather than as a rule."),
                 purpose: "Settle whether the dip does anything for *you*, rather than importing someone else's answer.",
                 filmFrom: .sideView,
                 methodGrade: .a,
@@ -400,58 +475,61 @@ public enum Curriculum {
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Your dip→release tempo stops changing when you step back: the far spot moves at least 0.05 s back towards the near one.",
+                plainWords: "Your rhythm stops changing when you step back: the far spot moves at least 0.05 s back towards the near one.",
                 check: PassCheck(measure: .dipToReleaseChangeAcrossDistance, scope: .acrossDistance,
                                  target: .moveBy(0.05),
-                                 description: "the far-spot dip→release moves at least 0.05 s back toward the near-spot value",
-                                 minimumN: 20),
+                                 description: "your far-spot time from the bottom of the dip to the release moves at least 0.05 s back towards your near-spot time",
+                                 minimumN: 20,
+                                 detail: "dipToReleaseChangeAcrossDistance, scope acrossDistance, target moveBy(0.05), minimum 20 counted shots. No published reference range for dip-to-release exists in any population, so the target is your own near-spot tempo; 0.05 s is the smallest move the measure resolves at these shot counts, not a published number."),
                 grade: .b,
                 source: "Reused verbatim from `FixLibrary`'s rushed-preparation package. There is no published reference range for dip-to-release at all, so the target is your own near-spot tempo, and 0.05 s is the smallest move the measure resolves at these shot counts — not a published number."),
             DoneCheck(
-                plainWords: "Your release-speed spread at the practised spot narrows.",
+                plainWords: "The speed you send the ball at stops varying so much from shot to shot.",
                 check: PassCheck(measure: .releaseSpeedSD, scope: .findingSpot, target: .narrowByDetectableRatio,
-                                 description: "next session's release-speed SD at or below this session's ÷ the detectable ratio",
-                                 minimumN: 25),
+                                 description: "next session's shot-to-shot speed spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD at the finding spot ÷ exp(1.96/√n) — 1.43 at n = 30, so a \(narrowByPercent) % narrowing. Slegers, Lee & Wong 2021 JSSM: release-velocity SD correlated r = −0.96 with 3-point and r = −0.88 with free-throw performance in 12 skilled shooters; skilled range 0.05–0.13 m/s."),
                 grade: .a,
                 source: "Slegers, Lee & Wong 2021 JSSM: release-velocity SD correlated r = −0.96 with 3-point and r = −0.88 with free-throw performance in 12 skilled shooters; skilled range 0.05–0.13 m/s."),
             DoneCheck(
-                plainWords: "The legs lead the arm on most shots.",
-                unavailableReason: "The proximal-to-distal order needs a close waist-up clip and is not carried on the diagnosis the checks read, so it cannot be scored as a gate. Where it is shown at all it is shown as a pattern — never as a lag in milliseconds, because no lag has ever been published.",
+                plainWords: "Your legs lead your arm on most shots.",
+                unavailableReason: "Seeing which joint moves first needs a close waist-up clip, and the order is not carried on the results the pass marks read, so it cannot finish this module. Where it is shown at all it is shown as a pattern — never as a number of milliseconds, because no such number has ever been published.",
+                detail: "proximalToDistalRate is not carried on Diagnosis. Jiang et al. 2025 J Hum Kinet: collegiate players were proximal-dominant at 3.2 m, recreational players distal-dominant; 20 players, 3 successful shots per distance.",
                 grade: .b,
                 source: "Jiang et al. 2025 J Hum Kinet: collegiate players were proximal-dominant at 3.2 m, recreational players distal-dominant; 20 players, 3 successful shots per distance."),
         ],
         faults: [
             CurriculumFault(
                 name: "Rushing the gather at range",
-                howItShowsInNumbers: "Dip→release time falls as the distance rises, and release-speed SD widens with it.",
+                howItShowsInNumbers: "Your time from the bottom of the dip to the release gets shorter as the distance gets longer, and the speed you send the ball at varies more with it.",
                 hypothesis: .rushedPreparation,
                 grade: .b,
                 sources: ["Cabarkapa et al. 2023 Front Sports Act Living: proficient shooters moved slower and lower in preparation, no release-phase differences (markerless 120 Hz, 34 males, between groups).",
                           "Botsi et al. 2024 JFMK: higher-level U18s released 12.5 % faster (t(77) = −3.213, p = 0.002) — the opposite direction, which is why only your own consistency is scored."]),
             CurriculumFault(
                 name: "No dip at all",
-                howItShowsInNumbers: "Nothing in a single block. It shows only in your own alternating sets: dip blocks against no-dip blocks at the same spot, compared on make rate and depth.",
+                howItShowsInNumbers: "Nothing in a single set. It shows only in your own alternating sets: dip sets against no-dip sets at the same spot, compared on how many went in and how deep they passed.",
                 hypothesis: nil,
                 grade: .a,
                 sources: ["Penner 2021: +7–9 % accuracy with the dip, within-subject, 36 elite males — grade A for an acute effect.",
                           "\"Always dip\" as a permanent prescription is grade D: the study was single-session, unblinded and had no retention test."]),
             CurriculumFault(
                 name: "Shooting with the arm only",
-                howItShowsInNumbers: "Knee-extension peak rate that does not rise as the distance rises. It needs a close form clip, and the number is reported rather than scored because no reference range exists for an individual.",
+                howItShowsInNumbers: "Your knees do not straighten any faster as you step back. It needs a close form clip, and the number is reported rather than scored, because nobody has published a range for one person.",
                 hypothesis: .armDominantDrive,
                 grade: .b,
                 sources: ["Cabarkapa et al. 2023: knee peak angular velocity separates proficient from non-proficient (recreational, between groups).",
                           "Okazaki & Rodacki 2012: experts showed no significant ankle/knee/hip change with distance and compensated with release speed — so 'use your legs more' is not a settled instruction."]),
             CurriculumFault(
                 name: "\"One-motion is faster, two-motion is more powerful\"",
-                howItShowsInNumbers: "Nothing. No comparative biomechanical study of one-motion against two-motion shooting was found, so ArcLab measures your tempo's consistency and takes no position on its shape.",
+                howItShowsInNumbers: "Nothing. Nobody has compared one-motion with two-motion shooting, so the app measures whether your rhythm repeats and takes no position on its shape.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["healthy-shot-model-2026-09-14.md §2.6 (searched 2026-09-14, nothing found); set-point height is in the same class and is deliberately not shown at all."]),
         ],
         openQuestions: [
-            "Dip-to-release has no published reference range in any population, so only the within-shooter consistency and the across-distance change can ever be gates here.",
-            "The sequencing order needs the close form clip and a trusted 3-D body model (Track A). Until then the module closes on tempo and speed SD alone.",
+            "Nobody has published a normal range for the time from dip to release, in any group of shooters. So the only pass marks possible here are your own consistency and your own change across distance.",
+            "Which joint leads needs the close form clip and a body model the app trusts in 3-D. Until then this module finishes on rhythm and speed alone.",
         ])
 
     // MARK: 4 — The guide hand
@@ -477,16 +555,28 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "Taped-stripe spin set", reps: 10, sets: 4, spots: [],
-                             constraint: "One strip of tape around the ball's seam, camera directly behind you. Watch the stripe, not the result.",
-                             schedule: "Blocked, near spot first: the spin axis is easier to control before the distance forces effort."),
+                             constraint: "A shot counts only if you watched the stripe rather than the result. Whether it went in does not decide it.",
+                             schedule: "One near spot, every set — the spin is easier to control before the distance makes you work.",
+                             setup: "One near spot, with a strip of tape right around the ball's seam. 10 shots a set, 4 sets.",
+                             doThis: "Watch the stripe as the ball flies and make it come back at you flat, with no tilt.",
+                             watches: "How far left or right of the middle your shots pass. The tilt of the spin itself is not measured yet.",
+                             doneWhen: "Next session your left-right spread is clearly tighter — about \(narrowByPercent) % tighter if you shoot 30 a side. The tilt itself is not scored, because the app cannot measure it yet.",
+                             why: "How steady your spin stays predicts where the ball misses left and right; how far off it points does not.",
+                             detail: "Slegers & Love 2022: SD of spin-axis alignment predicted lateral accuracy (r = 0.80) while mean misalignment did not. The taped-stripe capture mode is not shipped and spinAxisTiltDegrees is not carried on Diagnosis, so lateralSDCm is what is scored."),
                 purpose: "Turn an invisible fault into a visible one — the stripe shows the axis the hand actually left on.",
                 filmFrom: .behindShooter,
                 methodGrade: .b,
                 source: "Reused from `FixLibrary`'s spin-axis package. Slegers & Love 2022: SD of spin-axis alignment predicted lateral accuracy (r = 0.80) while mean misalignment did not. The taped-stripe capture mode is not shipped yet."),
             CurriculumDrill(
                 drill: Drill(name: "One-hand form set", reps: 10, sets: 4, spots: [.freeThrow],
-                             constraint: "Guide hand off the ball entirely, close to the rim, filmed from behind. A shot counts only if the stripe comes back flat.",
-                             schedule: "Blocked, close range."),
+                             constraint: "A shot counts only if the ball came back at you flat, with your guide hand off it completely.",
+                             schedule: "One spot close to the ring, all four sets.",
+                             setup: "Close to the ring — free-throw distance at most — with your guide hand behind your back. 10 shots a set, 4 sets.",
+                             doThis: "Shoot with your shooting hand only, rolling the ball off your two middle fingers.",
+                             watches: "How far left or right of the middle of the ring your shots pass, and how much that varies.",
+                             doneWhen: "Next session your left-right spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side, over at least 25 counted shots.",
+                             why: "Taking the off hand away stops whatever it was doing to the ball, so your shooting hand's own line can be seen.",
+                             detail: "One-hand form shooting is near-universal coaching practice with no controlled measurement behind it that could be found. What is scored is lateralSDCm, not the drill."),
                 purpose: "Remove the off hand so whatever it was doing to the ball stops, and the shooting hand's own line can be seen.",
                 filmFrom: .behindShooter,
                 methodGrade: .d,
@@ -494,36 +584,39 @@ public enum Curriculum {
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Your left–right spread at the rim narrows by more than chance can explain.",
+                plainWords: "Your shots stop scattering left and right by more than luck can explain.",
                 check: PassCheck(measure: .lateralSDCm, scope: .findingSpot, target: .narrowByDetectableRatio,
-                                 description: "next session's left–right SD at or below this session's ÷ the detectable ratio",
-                                 minimumN: 25),
+                                 description: "next session's left-right spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side",
+                                 minimumN: 25,
+                                 detail: "lateralSDCm at the finding spot ÷ exp(1.96/√n) — 1.43 at n = 30, so a \(narrowByPercent) % narrowing. Slegers & Love 2022 (spin-axis SD r = 0.80 with lateral accuracy; mean misalignment did not predict); Daly-Grafstein & Bornn 2020 (it is the variance that moves when the shot is disturbed, not the mean)."),
                 grade: .a,
                 source: "Slegers & Love 2022 (spin-axis SD r = 0.80 with lateral accuracy; mean misalignment did not predict); Daly-Grafstein & Bornn 2020 (it is the variance that moves when the shot is disturbed, not the mean)."),
             DoneCheck(
-                plainWords: "Your mean left–right offset sits inside ±3 cm rather than favouring one side.",
+                plainWords: "Your shots stop favouring one side: the average sits within 3 cm either side of the middle of the ring.",
                 check: PassCheck(measure: .lateralMeanCm, scope: .findingSpot, target: .insideBand(low: -3, high: 3),
-                                 description: "next session's mean left–right offset inside ±3 cm",
-                                 minimumN: 20),
+                                 description: "next session's average left-right miss sits inside 3 cm either side of the middle",
+                                 minimumN: 20,
+                                 detail: "lateralMeanCm inside ±3 cm, minimum 20 counted shots. Reused verbatim from `FixLibrary`'s lateral-aim package: mean offset near zero in professionals, ±11 cm of ring tolerance either side of the ball (exact geometry)."),
                 grade: .a,
                 source: "Reused verbatim from `FixLibrary`'s lateral-aim package: mean offset near zero in professionals, ±11 cm of ring tolerance either side of the ball (exact geometry)."),
             DoneCheck(
-                plainWords: "Your spin axis sits inside ±10° of pure backspin.",
-                unavailableReason: "The taped-stripe capture mode is not shipped, and spin-axis tilt is not carried on the diagnosis the checks read. Until it is, this gate cannot be scored — the left–right spread above is its measurable consequence, not a substitute for it.",
+                plainWords: "The ball comes back at you flat, within 10° of straight backspin.",
+                unavailableReason: "The taped-ball mode is not shipped yet, and the app does not carry the tilt on your results, so this cannot be scored. The left-right spread above is what the tilt shows up as, not a substitute for it.",
+                detail: "spinAxisTiltDegrees is not carried on Diagnosis. Slegers & Love 2022 for the axis-consistency link; the ±10° band and the 2–3° per-frame resolution are the app's own feasibility numbers (`DESIGN-MEMO-2026-09-13.md` §3.7), not a published range.",
                 grade: .b,
                 source: "Slegers & Love 2022 for the axis-consistency link; the ±10° band and the 2–3° per-frame resolution are the app's own feasibility numbers (`DESIGN-MEMO-2026-09-13.md` §3.7), not a published range."),
         ],
         faults: [
             CurriculumFault(
                 name: "Thumb flick from the off hand",
-                howItShowsInNumbers: "A tilted spin axis (not measurable yet) and, when it is systematic, a left–right mean that sits on one side. The spread is what is actually scored.",
+                howItShowsInNumbers: "A tilted spin, which is not measurable yet, and — when it happens the same way every time — shots that average off to one side. The scatter is what is actually scored.",
                 hypothesis: .lateralAimBias,
                 grade: .d,
                 sources: ["The claim that the off thumb causes the miss is coaching folklore: the retrievable sources are training-aid patent filings (US 10,427,020; US 5,188,356) and coaching sites, not measurement.",
                           "What is grade A is only that lateral *consistency* predicts and the mean does not (Slegers & Love 2022; Daly-Grafstein & Bornn 2020)."]),
             CurriculumFault(
                 name: "Guide hand still on the ball at release",
-                howItShowsInNumbers: "Nothing directly. It would need a close waist-up clip and a hand-contact measurement ArcLab does not have; only the left–right spread can carry it.",
+                howItShowsInNumbers: "Nothing directly. Seeing it would need a close waist-up clip and a hand-contact measurement ArcLab does not have; only the left-right scatter can carry it.",
                 hypothesis: nil,
                 grade: .c,
                 sources: ["Coaching consensus with a mechanical rationale (a second contact adds a second force at release); no controlled measurement found."]),
@@ -535,8 +628,8 @@ public enum Curriculum {
                 sources: ["Coaching-site instruction only (e.g. Revolution Basketball Training, 'guide hand placement'). Listed so it is recognised as unmeasured when a coach says it."]),
         ],
         openQuestions: [
-            "This module cannot be scored at all from a side view: everything it touches lives in the left–right channel, which needs the camera behind the shooter.",
-            "The taped-stripe spin mode is the single unlock that would turn this module's real subject into a measurement.",
+            "This module cannot be scored at all from a side view: everything it touches is left and right, which needs the phone behind you.",
+            "The taped-ball mode is the one thing that would turn this module's real subject into a measurement.",
         ])
 
     // MARK: 5 — Release and follow-through
@@ -562,91 +655,106 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "One-spot depth band", reps: 10, sets: 8, spots: [],
-                             constraint: "Same spot all session. A shot counts only if it crosses inside your own make band; makes that come in short or long are called out as misses.",
-                             schedule: "Blocked. This is an acquisition drill for a new feel."),
-                purpose: "Score depth rather than the result, so the channel that carries the percentage is the one being practised.",
+                             constraint: "A shot counts only if it passed inside your own make band. A shot that drops in short or long is called a miss here, because depth is what is being practised.",
+                             schedule: "One spot, every set, the whole session — the feel is new.",
+                             setup: "One spot, and stay there all session. 10 shots a set, 8 sets.",
+                             doThis: "Send every ball to the same point over the back half of the ring.",
+                             watches: "How far past the front of the ring each shot passes, and how much the speed you send the ball at varies.",
+                             doneWhen: "Next session the speed you send the ball at varies clearly less than this session — about \(narrowByPercent) % less if you shoot 30 a side — and it is still tighter the session after.",
+                             why: "How much your release speed varies is the strongest published predictor of shooting percentage there is, at r = −0.96 with three-point percentage in skilled shooters.",
+                             detail: "Gate: releaseSpeedSD at the finding spot ÷ exp(1.96/√n). Slegers, Lee & Wong 2021 JSSM: release-velocity SD r = −0.96 with 3P%. The make band is your own, computed from your own makes once there are enough of them, and falls back to the published 25–28 cm band below that floor."),
+                purpose: "Score depth rather than the result, so the thing that carries the percentage is the thing being practised.",
                 filmFrom: .sideView,
                 methodGrade: .a,
                 source: "Reused from `FixLibrary`'s speed-variability package. Slegers, Lee & Wong 2021: release-velocity SD r = −0.96 with 3P%. The band itself is your own, computed from your own makes when there are enough of them."),
             CurriculumDrill(
                 drill: Drill(name: "Over-the-top", reps: 10, sets: 6, spots: [],
-                             constraint: "A helper holds a pole (or you imagine a bar) a metre in front of the rim at rim height plus half a metre. Any shot that would clip it does not count.",
-                             schedule: "Blocked."),
-                purpose: "Buy arc margin when the entry angle is under 40°, where the ball has less than 3 cm of room.",
+                             constraint: "A shot counts only if it cleared the bar. A shot that would clip it does not count, even if it goes in.",
+                             schedule: "One spot, every set.",
+                             setup: "One spot. Get a helper to hold a pole about a metre in front of the ring and half a metre above ring height — or picture a bar there. 10 shots a set, 6 sets.",
+                             doThis: "Send every ball over the bar and down into the ring.",
+                             watches: "The angle your ball is falling at when it reaches the ring.",
+                             doneWhen: "Next session your average falling angle is 40° or steeper, over at least 20 counted shots. Steeper than the mid-40s buys nothing, so the app does not ask for it.",
+                             why: "Below 40° the ball has under 3 cm of room to fit through the ring, and below about 32° it cannot fit at all — that part is exact geometry, grade A.",
+                             detail: "Gate: entryAngleMeanDegrees inside 40–52°, minimum 20 counted shots. The floor is asin(ball diameter ÷ rim diameter) = 31.4° for a 0.2385 m ball, 32.1° at the top of the rulebook tolerance. Daly-Grafstein & Bornn 2020: entry angle is the least peaked of the three rim-plane variables, so there is nothing to gain past the mid-40s."),
+                purpose: "Buy room through the ring when the ball is falling at less than 40°, where it has under 3 cm to spare.",
                 filmFrom: .sideView,
                 methodGrade: .c,
                 source: "Reused from `FixLibrary`'s flat-arc package. The 40° margin and the ≈32° floor are exact geometry (grade A); that a physical constraint is the way to change the arc is coaching consensus (grade C)."),
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Your release-speed spread narrows by more than chance can explain, and stays narrow next session.",
+                plainWords: "The speed you send the ball at varies clearly less than it did, and it is still tighter the session after.",
                 check: PassCheck(measure: .releaseSpeedSD, scope: .findingSpot, target: .narrowByDetectableRatio,
-                                 description: "next session's release-speed SD at or below this session's ÷ the detectable ratio",
-                                 minimumN: 25),
+                                 description: "next session's shot-to-shot speed spread is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 a side",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD at the finding spot ÷ exp(1.96/√n) — 1.43 at n = 30, so a \(narrowByPercent) % narrowing. Slegers, Lee & Wong 2021 JSSM, 12 skilled shooters: velocity SD r = −0.96 with 3-point performance; skilled range 0.05–0.13 m/s."),
                 grade: .a,
                 source: "Slegers, Lee & Wong 2021 JSSM (n = 12 skilled shooters, matched measurement class): velocity SD r = −0.96 with 3-point performance; skilled range 0.05–0.13 m/s at both free-throw and three-point distance."),
             DoneCheck(
-                plainWords: "Your mean entry angle clears 40° without chasing past the mid-40s.",
+                plainWords: "Your ball falls at 40° or steeper on average, without chasing anything steeper than the mid-40s.",
                 check: PassCheck(measure: .entryAngleMeanDegrees, scope: .findingSpot,
                                  target: .insideBand(low: 40, high: 52),
-                                 description: "next session's mean entry angle at or above 40° and not chasing past the mid-40s",
-                                 minimumN: 20),
+                                 description: "next session's average falling angle is 40° or steeper, and no steeper than the mid-40s",
+                                 minimumN: 20,
+                                 detail: "entryAngleMeanDegrees inside 40–52°, minimum 20 counted shots. Exact geometry for the floor, asin(d_ball/d_rim) ≈ 31.4–32.1°, under 3 cm of margin by 40°; Daly-Grafstein & Bornn 2020 for make probability being flat over a range of entry angles."),
                 grade: .a,
                 source: "Exact geometry for the floor (asin(d_ball/d_rim) ≈ 31.4–32.1°, under 3 cm of margin by 40°); Daly-Grafstein & Bornn 2020 for make probability being flat over a range of entry angles. Reused verbatim from `FixLibrary`'s flat-arc package."),
             DoneCheck(
-                plainWords: "Your mean crossing depth sits between 25 and 28 cm past the front rim.",
+                plainWords: "Your shots pass between 25 and 28 cm past the front of the ring on average.",
                 check: PassCheck(measure: .depthMeanCm, scope: .findingSpot,
                                  target: .insideBand(low: depthBandCm.low, high: depthBandCm.high),
-                                 description: "next session's mean crossing between 25 and 28 cm past the front rim",
-                                 minimumN: 20),
+                                 description: "next session's average passes between 25 and 28 cm past the front of the ring",
+                                 minimumN: 20,
+                                 detail: "depthMeanCm inside the published band, minimum 20 counted shots. Daly-Grafstein & Bornn 2019 JQAS: over >50 000 NBA three-point trajectories, make probability peaked 25–28 cm (10–11 in) past the front rim, against a ring centre at 22.9 cm. Measured on NBA threes, not on this shooter."),
                 grade: .a,
                 source: "Daly-Grafstein & Bornn 2019 JQAS: over >50 000 NBA three-point trajectories, make probability peaked 25–28 cm (10–11 in) past the front rim, against a ring centre at 22.9 cm. Measured on NBA threes, not on this shooter."),
         ],
         faults: [
             CurriculumFault(
                 name: "Flat arc",
-                howItShowsInNumbers: "Mean entry angle under 40°, where the ball has under 3 cm of margin through the ring; below about 32° it cannot fit at all.",
+                howItShowsInNumbers: "Your ball is falling at less than 40° on average, where it has under 3 cm of room to fit through the ring. Below about 32° it cannot fit at all.",
                 hypothesis: .flatArcGeometry,
                 grade: .a,
                 sources: ["Exact geometry: the entry-angle floor is asin(ball diameter / rim diameter), 31.4° for a 0.2385 m ball and 32.1° at the top of the rulebook tolerance.",
                           "Daly-Grafstein & Bornn 2020: entry angle is the least peaked of the three rim-plane variables — there is nothing to gain past the mid-40s."]),
             CurriculumFault(
                 name: "Release speed varying shot to shot",
-                howItShowsInNumbers: "Release-speed SD, and the share of your depth spread the delta method attributes to the speed channel. At ~7.2 m/s over ~5.3 m, 0.1 m/s is about 15 cm of depth at the rim.",
+                howItShowsInNumbers: "How much the speed you send the ball at changes from shot to shot, and how much of your front-to-back scatter comes from it. At about 7.2 m/s over 5.3 m, a change of 0.1 m/s is roughly 15 cm at the ring.",
                 hypothesis: .speedVariability,
                 grade: .a,
                 sources: ["Slegers, Lee & Wong 2021 (the correlation); the speed-to-depth conversion is the exact range derivative, so it is geometry."]),
             CurriculumFault(
                 name: "Short misses",
-                howItShowsInNumbers: "Misses whose release speed sits below the makes', and a mean crossing depth short of the 25–28 cm band.",
+                howItShowsInNumbers: "Misses that left your hand slower than your makes did, and an average that passes short of the 25–28 cm band.",
                 hypothesis: .depthBiasShort,
                 grade: .a,
                 sources: ["Mullineaux & Uhl 2010: misses released −0.12 ± 0.10 m/s below optimal vs −0.02 ± 0.07 for swishes (grade B, 3 makes vs 3 misses per subject).",
                           "Daly-Grafstein & Bornn 2019/2020 for the band and for contests biasing shots short."]),
             CurriculumFault(
                 name: "Elbow flaring away from vertical",
-                howItShowsInNumbers: "Forearm-from-vertical in the frontal plane, which needs a behind-the-shooter clip. ArcLab's elbow numbers today are sagittal, from a side view, and cannot see flare at all.",
+                howItShowsInNumbers: "How far your forearm leans away from upright, seen from behind you. ArcLab's elbow numbers today come from a side view and cannot see the lean at all.",
                 hypothesis: .forearmFlare,
                 grade: .b,
                 sources: ["Cabarkapa & Fry 2021 CEJSSM: proficient 7.9 ± 7.2° vs non-proficient 19.8 ± 17.6° from vertical — between groups, 17 recreationally active males, one session.",
                           "\"Keep the elbow under the ball\" as a universal instruction is grade D: Cabarkapa et al. 2022 found no kinematic differences at all between excellent and good professionals."]),
             CurriculumFault(
                 name: "\"Shoot 45° arc\"",
-                howItShowsInNumbers: "It is not a fault and not a target. Mid-40s is where NBA makes cluster; the same NBA player shoots about 38° mid-range, 45° from three and 53° from the line.",
+                howItShowsInNumbers: "It is not a fault and not a target. The mid-40s is where NBA makes happen to cluster; the same NBA player shoots about 38° from mid-range, 45° from three and 53° from the line.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["Slegers 2022 IJPAS: each shooter's optimal release angle sits 4.3 ± 2.1° above their own minimum-velocity angle and correlates r = 0.78 with their own release covariance — the right angle is individual by construction.",
                           "The 45° universal traces to vendor marketing with no published method (Noah, 'Building the Perfect Arc'), and to per-shot-type averages misread as targets (Nylon Calculus 2018)."]),
             CurriculumFault(
                 name: "\"Hold the follow-through for two seconds\"",
-                howItShowsInNumbers: "Nothing. It is a way of keeping the hand still long enough not to disturb the release; no controlled measurement of the hold duration was found.",
+                howItShowsInNumbers: "Nothing. It is a way of keeping your hand still long enough not to disturb the ball; nobody has ever measured how long to hold it.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["Coaching consensus with no measurement. The measurable consequence a coach is after is a narrower left–right spread, which is the guide-hand module's gate."]),
         ],
         openQuestions: [
-            "Release height has no agreed direction of effect across studies, so it is reported as context for the release angle and never as a lever.",
-            "Elbow flare needs a behind-the-shooter clip and a frontal forearm angle ArcLab does not carry on the session summary yet.",
+            "Studies disagree about whether shooting from higher helps, so the app shows your release height as background to your release angle and never as something to change.",
+            "The forearm lean needs the phone behind you and an angle ArcLab does not yet carry on your session summary.",
         ])
 
     // MARK: 6 — Range
@@ -659,8 +767,8 @@ public enum Curriculum {
         summary: """
             Range is not a distance you can reach; it is the distance at which your shot still behaves \
             like your shot. The published signature of a shooter who has range is not a bigger number \
-            anywhere — it is that the release-speed spread does not inflate when the distance goes up. \
-            Skilled shooters' velocity SD was the same at the free-throw line and from three.
+            anywhere — it is that the speed you send the ball at does not start varying more when the \
+            distance goes up. Skilled shooters varied no more from three than from the free-throw line.
             """,
         whatCoachWatches: [
             "Whether the release-speed spread widens when the shooter steps back.",
@@ -673,82 +781,97 @@ public enum Curriculum {
             CurriculumDrill(
                 drill: Drill(name: "Distance ladder", reps: 5, sets: 16,
                              spots: [.freeThrow, .elbow, .midRange, .three],
-                             constraint: "Five shots at each of four distances, four rounds. Step back only after two shots in a row cross inside your own make band; step forward again the moment three in a row miss it.",
-                             schedule: "Blocked by distance for the first two sessions, then shuffled — blocked practice wins during acquisition and loses on retention and transfer (Shamshiri 2025, ηp² = 0.24)."),
-                purpose: "Let the far spot be earned by the near one, and measure the two on the same day so the ratio means something.",
+                             constraint: "Step back only after two shots in a row pass inside your own make band. Step forward again the moment three in a row miss it.",
+                             schedule: "Stay in distance order for your first two sessions, then shuffle the distances.",
+                             setup: "Four distances: free throws, elbow, mid-range and three. 5 shots at each, four rounds — 80 shots.",
+                             doThis: "Send the ball to the same point over the back of the ring from every distance.",
+                             watches: "How much the speed you send the ball at varies at your far spot, against your near spot.",
+                             doneWhen: "Your far spot's speed spread is no more than about \(widerByPercent) % wider than your near spot's. Anything closer than that, 30 shots a side cannot tell from luck.",
+                             why: "Shooters with real range do not get more variable when they step back: skilled shooters' speed varied the same amount from three as from the free-throw line.",
+                             detail: "Gate: releaseSpeedSDRatioAcrossDistance inside 0–1.43, minimum 25 counted shots. 1.43 is DoctorStats.detectableSDRatio(n: 30) = exp(1.96/√30) — arithmetic from the shipped code, not a published threshold. Slegers, Lee & Wong 2021: skilled velocity SD 0.086 vs 0.089 m/s at free-throw and three-point range. Variable-distance practice equalled constant practice on delayed retention (Shoenfelt et al. 2002, 94 participants, randomised, 3 weeks); blocked beats random during acquisition and loses on retention and transfer (Shamshiri 2025, ηp² = 0.24)."),
+                purpose: "Let the far spot be earned by the near one, and measure both on the same day so the comparison means something.",
                 filmFrom: .sideView,
                 methodGrade: .b,
                 source: "Reused from `FixLibrary`'s range package. Variable-distance practice equalled constant practice on delayed retention despite worse practice performance (Shoenfelt et al. 2002, 94 participants, randomised, 3 weeks) — it is not better, it is not worse, and it is the only way to measure the ratio."),
             CurriculumDrill(
                 drill: Drill(name: "Step-in range extension", reps: 6, sets: 8, spots: [.midRange, .three],
-                             constraint: "One step into the shot from behind the line so the legs supply the extra distance. Then repeat the same shot standing still and compare.",
-                             schedule: "Alternating pairs: one stepping set, one standing set."),
-                purpose: "Find out whether the far-spot problem is power or mechanics, by supplying the power a different way.",
+                             constraint: "A shot counts only if the step and the shot were one movement. Record the stepping sets and the standing sets separately so the two can be compared.",
+                             schedule: "Alternate: one stepping set, one standing set.",
+                             setup: "Mid-range and three. 6 shots a set, 8 sets — four stepping, four standing.",
+                             doThis: "Take one step into the shot from behind the line so your legs supply the extra distance.",
+                             watches: "How fast your knees straighten and how much your release speed varies — stepping sets against standing sets.",
+                             doneWhen: "Done when you have four sets each way at the same spot and the app can show you which way your own numbers went. There is no pass mark: nobody has published a target for how fast one person's knees should straighten.",
+                             why: "Experts get extra distance by changing how fast they send the ball rather than by bending more, so \"use your legs\" is a thing to test on yourself, not a rule.",
+                             detail: "Okazaki & Rodacki 2012: experts showed no significant ankle/knee/hip change with distance and compensated with release speed. kneeDriveChangeAcrossDistance is reported, not scored — no published target exists for an individual."),
+                purpose: "Find out whether the far-spot problem is power or technique, by supplying the power a different way.",
                 filmFrom: .sideView,
                 methodGrade: .c,
                 source: "Reused from `FixLibrary`'s arm-dominant package. Okazaki & Rodacki 2012 found experts compensated for distance with release speed rather than with joint-angle change, so 'use the legs' is a hypothesis to test on your own sets, not a prescription."),
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Your far-spot release-speed spread is no more than about 1.4× your near-spot spread — it is not distinguishably wider.",
+                plainWords: "Your shot does not get more variable when you step back: the far spot's speed spread is no more than about \(widerByPercent) % wider than the near spot's.",
                 check: PassCheck(measure: .releaseSpeedSDRatioAcrossDistance, scope: .acrossDistance,
                                  target: .insideBand(low: 0, high: notWiderRatio),
-                                 description: "far ÷ near release-speed SD at or below 1.43, which is the smallest widening 30 shots a side can be told from chance",
-                                 minimumN: 25),
+                                 description: "your far spot's speed spread is no more than about \(widerByPercent) % wider than your near spot's, which is the smallest widening 30 shots a side can tell from luck",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSDRatioAcrossDistance inside 0–1.43, minimum 25 counted shots. 1.43 is `DoctorStats.detectableSDRatio(n: 30) = exp(1.96/√30)` — arithmetic from the shipped code, not a published threshold. Slegers, Lee & Wong 2021: skilled velocity SD was the same at free-throw and three-point range, 0.086 vs 0.089 m/s."),
                 grade: .a,
                 source: "Slegers, Lee & Wong 2021: skilled velocity SD was the same at free-throw and three-point range (0.086 vs 0.089 m/s). The 1.43 is `DoctorStats.detectableSDRatio(n: 30) = exp(1.96/√30)` — arithmetic from the shipped code, not a published threshold."),
             DoneCheck(
-                plainWords: "Your far-spot release-speed spread narrows in its own right.",
+                plainWords: "The speed you send the ball at from your far spot stops varying so much in its own right.",
                 check: PassCheck(measure: .releaseSpeedSD, scope: .farSpot, target: .narrowByDetectableRatio,
-                                 description: "next session's release-speed SD at the far spot at or below this session's ÷ the detectable ratio",
-                                 minimumN: 25),
+                                 description: "next session's speed spread at your far spot is clearly tighter than this session's — about \(narrowByPercent) % tighter if you shoot 30 there",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD at the far spot ÷ exp(1.96/√n) — 1.43 at n = 30, so a \(narrowByPercent) % narrowing. Reused verbatim from `FixLibrary`'s range package; Slegers 2021 for why the speed channel leads."),
                 grade: .a,
                 source: "Reused verbatim from `FixLibrary`'s range package. Slegers 2021 for why the speed channel leads."),
             DoneCheck(
-                plainWords: "Your arc at the far spot still clears 40°, rather than flattening to buy the distance.",
+                plainWords: "Your arc holds up at the far spot: the ball still falls at 40° or steeper instead of flattening out to reach.",
                 check: PassCheck(measure: .entryAngleMeanDegrees, scope: .farSpot,
                                  target: .insideBand(low: 40, high: 52),
-                                 description: "far-spot mean entry angle at or above 40°",
-                                 minimumN: 20),
+                                 description: "your far-spot average falling angle is 40° or steeper",
+                                 minimumN: 20,
+                                 detail: "entryAngleMeanDegrees at the far spot inside 40–52°, minimum 20 counted shots. Exact geometry for the floor and the 3 cm margin at 40°; Okazaki & Rodacki 2012 for release angle falling with distance (grade B), which is why the far spot is where this is checked."),
                 grade: .a,
                 source: "Exact geometry for the floor and the 3 cm margin at 40°; Okazaki & Rodacki 2012 for release angle falling with distance in the first place (grade B), which is why the far spot is where this is checked."),
         ],
         faults: [
             CurriculumFault(
                 name: "Running out of power at range",
-                howItShowsInNumbers: "Release-speed SD that is distinguishably wider at the far spot than the near one, and misses that fall short.",
+                howItShowsInNumbers: "The speed you send the ball at varies clearly more at the far spot than at the near one, and your misses fall short.",
                 hypothesis: .rangeStrengthLimit,
                 grade: .a,
                 sources: ["Slegers, Lee & Wong 2021: skilled shooters' velocity SD was the *same* at both distances, so a widening ratio is a departure from the skilled pattern.",
                           "Okazaki & Rodacki 2012: accuracy falls 59 % → 37 % from 2.8 m to 6.4 m even in experts, so some fall-off is normal and only the spread ratio is scored."]),
             CurriculumFault(
                 name: "Arc collapsing at the far spot",
-                howItShowsInNumbers: "Far-spot mean entry angle under 40° while the near spot clears it.",
+                howItShowsInNumbers: "Your ball falls at less than 40° at the far spot while it still clears 40° at the near one.",
                 hypothesis: .flatArcGeometry,
                 grade: .a,
                 sources: ["Exact geometry for the margin; Okazaki & Rodacki 2012 for release angle falling with distance (grade B)."]),
             CurriculumFault(
                 name: "Rushing the far shots",
-                howItShowsInNumbers: "Dip→release time at the far spot shorter than at the near spot by more than your own near-spot SD.",
+                howItShowsInNumbers: "Your time from the bottom of the dip to the release is shorter at the far spot than at the near one, by more than your near-spot times vary among themselves.",
                 hypothesis: .rushedPreparation,
                 grade: .b,
                 sources: ["Cabarkapa et al. 2023 and Botsi et al. 2024, which disagree on direction — so it is your own change across distance that is read, not a published tempo."]),
             CurriculumFault(
                 name: "Shooting with the arm at range",
-                howItShowsInNumbers: "Knee-extension peak rate flat across distances while the release speed rises. Needs a close form clip, and the joint number is reported rather than scored.",
+                howItShowsInNumbers: "Your knees do not straighten any faster as you step back while the ball leaves faster. It needs a close form clip, and the joint number is reported rather than scored.",
                 hypothesis: .armDominantDrive,
                 grade: .b,
                 sources: ["Cabarkapa et al. 2023 (between-group knee angular velocity); Okazaki & Rodacki 2012 (experts changed speed, not joint angles)."]),
             CurriculumFault(
                 name: "\"Shoot from further back to build range\"",
-                howItShowsInNumbers: "Nothing measures the method; what the app can see is whether the far/near spread ratio moved.",
+                howItShowsInNumbers: "Nothing measures the method. What the app can see is whether the gap between your far-spot and near-spot spreads moved.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["No study tested shooting beyond one's range as a range-building method. The nearest tested thing is variable-distance practice, which merely *equalled* constant practice on delayed retention (Shoenfelt et al. 2002, grade B)."]),
         ],
         openQuestions: [
-            "The far ÷ near ratio needs both spots measured in comparable conditions; two spots filmed on different days from different camera positions are not a ratio worth reading.",
-            "Whether strength work moves the far-spot spread is untested here and unmeasured by ArcLab.",
+            "Comparing far with near needs both spots filmed the same way. Two spots filmed on different days from different camera positions are not a comparison worth reading.",
+            "Whether strength work shrinks the far-spot spread is untested here, and ArcLab does not measure it.",
         ])
 
     // MARK: 7 — Off the dribble
@@ -774,16 +897,28 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "Pull-up pair", reps: 6, sets: 8, spots: [.elbow, .midRange],
-                             constraint: "Alternate: one set catch-and-shoot from the mark, one set one-dribble pull-up to the same mark. Same spot, same camera, each set recorded as its own block so the comparison is block against block.",
-                             schedule: "Alternating pairs. The order is fixed rather than randomised because the comparison, not the practice schedule, is the point."),
+                             constraint: "A set counts only if the whole set was one kind of shot, from the same mark, with the phone in the same place. Record each set on its own so catch sets and pull-up sets can be compared.",
+                             schedule: "Alternate: one catch set, one pull-up set, in that order every time — the comparison is the point, not the mix.",
+                             setup: "The elbow and mid-range, with a chalk mark to shoot from. 6 shots a set, 8 sets — four catch, four pull-up.",
+                             doThis: "On pull-up sets, take one dribble and shoot from the same mark the catch sets used.",
+                             watches: "How much your release speed and your depth past the front of the ring vary — pull-up sets against catch sets.",
+                             doneWhen: "Your pull-up sets vary no more than about \(widerByPercent) % more than your catch sets. Anything closer than that, 30 shots a side cannot tell from luck.",
+                             why: "Nobody has compared catch shooting with pull-up shooting in a laboratory, so the honest version is the comparison you run on yourself.",
+                             detail: "Gate: releaseSpeedSD, pull-up block at or below 1.43 × the catch block's — `DoctorStats.detectableSDRatio(n: 30)`. The A-B design is the one `DESIGN-MEMO-2026-09-13.md` §C1 asks for; no peer-reviewed kinematic comparison of catch-and-shoot against off-the-dribble release parameters was found."),
                 purpose: "Measure the cost of the dribble instead of guessing it.",
                 filmFrom: .sideView,
                 methodGrade: .c,
                 source: "The A-B design is sound (it is the design `DESIGN-MEMO-2026-09-13.md` §C1 asks for); the claim that a pull-up should match a catch is coaching consensus. No peer-reviewed kinematic comparison of catch-and-shoot against off-the-dribble release parameters was found."),
             CurriculumDrill(
                 drill: Drill(name: "Gather tempo match", reps: 8, sets: 6, spots: [.elbow],
-                             constraint: "One-dribble pull-up to a chalk mark. A repetition counts only if the ball leaves inside your own catch-and-shoot dip→release band, whatever it does at the rim.",
-                             schedule: "Blocked at one spot until the tempo repeats."),
+                             constraint: "A shot counts only if it left inside your own catch-and-shoot rhythm time, whatever it does at the ring.",
+                             schedule: "One spot, every set, until the rhythm repeats itself.",
+                             setup: "The elbow, with a chalk mark to shoot from. 8 shots a set, 6 sets.",
+                             doThis: "Take one dribble to the mark and shoot on the same count you use off a catch.",
+                             watches: "The time from the lowest point of the ball to the release, pull-up against catch.",
+                             doneWhen: "There is no pass mark. Your target is your own catch-and-shoot rhythm, and matching it off the dribble has never been tested by anyone.",
+                             why: "Stopping the dribble from squeezing your rhythm is an idea, not a finding.",
+                             detail: "The rhythm band is your own measured dip→release spread. No published reference exists for gather time in any population."),
                 purpose: "Stop the dribble from compressing the tempo the rhythm module just settled.",
                 filmFrom: .sideView,
                 methodGrade: .d,
@@ -791,63 +926,66 @@ public enum Curriculum {
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Recorded as two blocks at the same spot, your pull-up block's release-speed spread is no more than about 1.4× your catch block's.",
+                plainWords: "Recorded as two sets at the same spot, your pull-up shots vary no more than about \(widerByPercent) % more than your catch shots.",
                 check: PassCheck(measure: .releaseSpeedSD, scope: .findingSpot,
                                  target: .narrowByFraction(notWiderRatio),
-                                 description: "the pull-up block's release-speed SD at or below 1.43 × the catch block's — the smallest widening 30 shots a side can be told from chance",
-                                 minimumN: 25),
+                                 description: "your pull-up set's speed spread is no more than about \(widerByPercent) % wider than your catch set's, which is the smallest widening 30 shots a side can tell from luck",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD, pull-up block at or below 1.43 × the catch block's. The versatility definition in healthy-shot-model-2026-09-14.md §4: a versatile shot is one whose release-speed and depth spread do not inflate when the condition changes (Slegers 2021 across distance; Amaro et al. 2025 across defender and noise; Daly-Grafstein & Bornn 2020 for contests raising variance 56 %/38 % without moving the mean). The 1.43 is `DoctorStats.detectableSDRatio(n: 30)` — arithmetic."),
                 grade: .a,
                 source: "The versatility definition in healthy-shot-model-2026-09-14.md §4: a versatile shot is one whose release-speed and depth spread do not inflate when the condition changes (Slegers 2021 across distance; Amaro et al. 2025 across defender and noise; Daly-Grafstein & Bornn 2020 for contests raising variance 56 %/38 % without moving the mean). The 1.43 is `DoctorStats.detectableSDRatio(n: 30)` — arithmetic."),
             DoneCheck(
-                plainWords: "Your mean crossing depth off the dribble still sits between 25 and 28 cm past the front rim.",
+                plainWords: "Off the dribble your shots still pass between 25 and 28 cm past the front of the ring on average.",
                 check: PassCheck(measure: .depthMeanCm, scope: .findingSpot,
                                  target: .insideBand(low: depthBandCm.low, high: depthBandCm.high),
-                                 description: "the pull-up block's mean crossing between 25 and 28 cm past the front rim",
-                                 minimumN: 20),
+                                 description: "your pull-up set's average passes between 25 and 28 cm past the front of the ring",
+                                 minimumN: 20,
+                                 detail: "depthMeanCm inside the published band, minimum 20 counted shots. Daly-Grafstein & Bornn 2019 JQAS for the band; that contested and disturbed shots bias short is 2020, same authors."),
                 grade: .a,
                 source: "Daly-Grafstein & Bornn 2019 JQAS for the band; that contested and disturbed shots bias short is 2020, same authors."),
             DoneCheck(
-                plainWords: "Your step into the shot repeats: same foot first, gather inside your own band, no sideways drift.",
-                unavailableReason: "ArcLab measures no foot contacts, no gather time and no lateral drift yet, and no off-the-dribble footage exists to build them on. Track C is building the metrics (`docs/DESIGN-FOOTWORK-2026-09-15.md`); the specific numbers a drill definition would use — a 0.35 s gather, a drift under 0.1 stature — are in-house proposals with no published support and will be reported, never scored.",
+                plainWords: "Your step into the shot repeats: same foot first, same timing, no sliding sideways.",
+                unavailableReason: "ArcLab cannot see feet land, cannot time the gather and cannot see a sideways slide yet, and nothing has been filmed off the dribble to build them on. The numbers a drill would use — a 0.35 s gather, a slide under a tenth of your height — are in-house guesses with nothing published behind them, and will be reported, never scored.",
+                detail: "Track C (`docs/PLAN-1.1-2026-09-15.md`, `docs/DESIGN-FOOTWORK-2026-09-15.md`). No published reference range exists for gather time or lateral drift in any population.",
                 grade: .d,
                 source: "`docs/PLAN-1.1-2026-09-15.md` Track C. No published reference range exists for gather time or drift in any population."),
         ],
         faults: [
             CurriculumFault(
                 name: "Everything widens off the dribble",
-                howItShowsInNumbers: "Release-speed SD and depth SD wider on the pull-up blocks than on the catch blocks at the same spot on the same day.",
+                howItShowsInNumbers: "Your release speed and your depth both vary more on the pull-up sets than on the catch sets, at the same spot on the same day.",
                 hypothesis: .speedVariability,
                 grade: .a,
                 sources: ["The measure is grade A (Slegers, Lee & Wong 2021). That the dribble is what widened it is your own block comparison, not a published fact — no kinematic comparison of the two shot types was found."]),
             CurriculumFault(
                 name: "Drifting sideways out of the dribble",
-                howItShowsInNumbers: "A left–right mean off centre on the pull-up blocks that is not there on the catch blocks. Needs the camera behind the shooter.",
+                howItShowsInNumbers: "Your pull-up shots average off to one side when your catch shots do not. It needs the phone behind you.",
                 hypothesis: .lateralAimBias,
                 grade: .c,
                 sources: ["Daly-Grafstein & Bornn 2020 for disturbance showing in lateral spread (grade A); the attribution to the dribble is a coaching inference."]),
             CurriculumFault(
                 name: "Rushing the gather",
-                howItShowsInNumbers: "Dip→release time on the pull-up blocks shorter than your own catch-block band.",
+                howItShowsInNumbers: "Your time from the bottom of the dip to the release is shorter on the pull-up sets than your own catch sets ever go.",
                 hypothesis: .rushedPreparation,
                 grade: .c,
                 sources: ["No published gather-time reference exists in any population; only your own two blocks can be compared."]),
             CurriculumFault(
                 name: "\"Catch-and-shoot is 20–40 % better than off the dribble\"",
-                howItShowsInNumbers: "Nothing you can act on. It is a play-type aggregate from observational game data, which mixes shot selection, defence and clock with mechanics.",
+                howItShowsInNumbers: "Nothing you can act on. It is an average over play types from game data, which mixes shot selection, defence and the clock in with technique.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["Breakthrough Basketball's analytics summary quotes ~20 % (NBA) to ~40 % (college women) — aggregator, no method, no control for shot selection. healthy-shot-model-2026-09-14.md §4 grades it D."]),
             CurriculumFault(
                 name: "\"You stepped wrong\"",
-                howItShowsInNumbers: "Nothing today, and the claim that one step order is correct has no published support. When Track C's foot contacts land, ArcLab will be able to say whether your step *repeated* — which is a different and answerable question.",
+                howItShowsInNumbers: "Nothing today, and no study supports the idea that one step order is the correct one. When the app can see feet land it will be able to say whether your step *repeated* — a different and answerable question.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["No peer-reviewed comparison of step orders into a jump shot was found (searched 2026-09-15).",
                           "The Sport Journal foot-placement study found no significant effect of foot placement on accuracy (11 NCAA D-I women)."]),
         ],
         openQuestions: [
-            "No off-the-dribble footage exists yet. Until some is filmed, every gate in this module is a design, not a result.",
-            "A pull-up and a catch shot recorded on different days are not a comparison; the module needs both blocks on the same day, same spot, same camera.",
+            "Nothing has been filmed off the dribble yet. Until some is, every pass mark in this module is a design rather than a result.",
+            "A pull-up and a catch shot recorded on different days are not a comparison. This module needs both sets on the same day, same spot, same camera.",
         ])
 
     // MARK: 8 — Game speed
@@ -874,24 +1012,42 @@ public enum Curriculum {
         drills: [
             CurriculumDrill(
                 drill: Drill(name: "Bookend sets", reps: 10, sets: 6, spots: [],
-                             constraint: "Two counted sets at the start of the session and two at the end, same spot, with rest between blocks. The middle of the session is free shooting.",
-                             schedule: "Blocked bookends around whatever else the session holds."),
+                             constraint: "Only the four counted sets count — two at the start and two at the end, same spot. What you shoot in between is yours.",
+                             schedule: "Two counted sets at the start, two at the end, with rest in between and free shooting in the middle.",
+                             setup: "One spot, the same all session, with the phone in the same place at the start and at the end. 10 shots a set, 6 sets.",
+                             doThis: "Shoot your last set exactly the way you shot your first: same routine, same tempo.",
+                             watches: "How much the speed you send the ball at varies late in the session, against how much it varied at the start.",
+                             doneWhen: "Your late sets vary no more than about \(widerByPercent) % more than your first sets. Anything closer than that, 30 shots a side cannot tell from luck.",
+                             why: "Measuring the drop-off beats assuming it: elite juniors showed no drop at all after hard running, so the first and last sets are the whole experiment.",
+                             detail: "Textbook Ch 15 §15.3.4: report the total change across the session, not a slope and not a p-value. A set-of-10 mean depth has a standard error of 4.7 cm, so one first/last pair can only resolve a 13 cm change; three session pairs pooled resolve about 7.6 cm."),
                 purpose: "Measure the drift rather than assume it — the first and last blocks are the whole experiment.",
                 filmFrom: .sideView,
                 methodGrade: .a,
                 source: "Reused from `FixLibrary`'s within-session-drift package. Textbook Ch 15 §15.3.4: report the total change across the session, not a slope and not a p-value. A set-of-10 mean depth has a standard error of 4.7 cm, so one pair can only see a 13 cm change."),
             CurriculumDrill(
                 drill: Drill(name: "Rested blocks", reps: 10, sets: 6, spots: [],
-                             constraint: "Sixty seconds of rest between sets, and the session stops at the set where entry angle has fallen a full session SD rather than pushing through it.",
-                             schedule: "Blocked, with the rest interval as the variable under test."),
+                             constraint: "Stop at the set where your falling angle has dropped by more than it normally varies, instead of pushing through it.",
+                             schedule: "One spot, every set, with sixty seconds of rest between them — the rest is the thing being tested.",
+                             setup: "One spot, and a timer for the rest. 10 shots a set, 6 sets.",
+                             doThis: "Rest a full sixty seconds between sets, and stop the session when your arc drops rather than shooting through it.",
+                             watches: "The angle your ball is falling at, from the start of the session to the end.",
+                             doneWhen: "There is no pass mark. The app shows how your falling angle moved across the session, and you pick the rest that keeps it flat.",
+                             why: "Twelve minutes of game-like load cost high-level players 3–4 % of their falling angle and 14–19 % of their makes — but elite juniors lost nothing at all, so it is measured on you rather than assumed.",
+                             detail: "Bourdas et al. 2024: after 12 min of simulated game load in 38 high-level players, entry angle −3.1 to −3.9 %, release time +15–25 %, makes −14 to −19 %. Li et al. 2025 meta: SMD 0.67 moderate, 1.39 severe. Slawinski et al. 2018: zero release change in elite U18s after sprints."),
                 purpose: "Find the rest interval at which your own drift disappears, instead of training through it.",
                 filmFrom: .sideView,
                 methodGrade: .b,
                 source: "Reused from `FixLibrary`'s fatigue package. Bourdas et al. 2024: after 12 min of simulated game load in 38 high-level players, entry angle −3.1 to −3.9 %, release time +15–25 %, makes −14 to −19 %. Li et al. 2025 meta: SMD 0.67 moderate, 1.39 severe. Slawinski et al. 2018: zero release change in elite U18s after sprints."),
             CurriculumDrill(
                 drill: Drill(name: "Clock sets", reps: 8, sets: 6, spots: [.midRange, .three],
-                             constraint: "Shoot each repetition inside a four-second count from the catch. A shot that leaves late does not count.",
-                             schedule: "Blocked, near spot first."),
+                             constraint: "A shot counts only if it left inside four seconds of the catch. A late shot does not count, wherever it goes.",
+                             schedule: "Near spot first, every set, then the far spot.",
+                             setup: "Mid-range and three, with a passer or a self-toss and a four-second count. 8 shots a set, 6 sets.",
+                             doThis: "Catch and get the shot away inside a four-second count.",
+                             watches: "How much the speed you send the ball at varies under the count, against your unhurried sets.",
+                             doneWhen: "There is no pass mark for the count itself. What is scored is whether your release speed stays as steady under it as it is without it.",
+                             why: "A clock makes the drill resemble a possession rather than a drill — every coach uses time pressure and nobody has measured what it does to technique.",
+                             detail: "No controlled measurement of time-pressure drills on shooting mechanics was found. The constraints-led literature is quasi-experimental with no shooting-mechanics outcome (grade C)."),
                 purpose: "Put a constraint on the shot that resembles a possession rather than a drill.",
                 filmFrom: .sideView,
                 methodGrade: .d,
@@ -899,58 +1055,105 @@ public enum Curriculum {
         ],
         doneWhen: [
             DoneCheck(
-                plainWords: "Your late-session block's release-speed spread is no more than about 1.4× your first block's.",
+                plainWords: "Your late sets are no more variable than your first ones: the speed spread is no more than about \(widerByPercent) % wider.",
                 check: PassCheck(measure: .releaseSpeedSD, scope: .findingSpot,
                                  target: .narrowByFraction(notWiderRatio),
-                                 description: "the late block's release-speed SD at or below 1.43 × the first block's — the smallest widening 30 shots a side can be told from chance",
-                                 minimumN: 25),
+                                 description: "your late set's speed spread is no more than about \(widerByPercent) % wider than your first set's, which is the smallest widening 30 shots a side can tell from luck",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD, late block at or below 1.43 × the first block's. healthy-shot-model-2026-09-14.md §4: the defensible definition of versatility is unchanged spread across conditions. Amaro et al. 2025 (18 national-level players, 90 shots each): no significant effect of a 1.2×-height defender at 1 m or 105 dBA noise on jump height, release height, angle or velocity (all p ≥ 0.092). The ratio is arithmetic."),
                 grade: .a,
                 source: "healthy-shot-model-2026-09-14.md §4: the defensible definition of versatility is unchanged spread across conditions. Amaro et al. 2025 (18 national-level players, 90 shots each): no significant effect of a 1.2×-height defender at 1 m or 105 dBA noise on jump height, release height, angle or velocity (all p ≥ 0.092). The ratio is arithmetic."),
             DoneCheck(
-                plainWords: "Your late-session mean entry angle still clears 40°.",
+                plainWords: "Late in the session your ball still falls at 40° or steeper.",
                 check: PassCheck(measure: .entryAngleMeanDegrees, scope: .findingSpot,
                                  target: .insideBand(low: 40, high: 52),
-                                 description: "the late block's mean entry angle at or above 40°, the same band as the first block",
-                                 minimumN: 20),
+                                 description: "your late set's average falling angle is 40° or steeper, the same as your first set's",
+                                 minimumN: 20,
+                                 detail: "entryAngleMeanDegrees inside 40–52°, minimum 20 counted shots. Bourdas et al. 2024 for entry angle being the channel that falls under game load (−3.1 to −3.9 %); the 40° band is exact geometry."),
                 grade: .a,
                 source: "Bourdas et al. 2024 for entry angle being the channel that falls under game load (−3.1 to −3.9 %); the 40° band is exact geometry. That it falls for *you* is measured, never assumed — Slawinski et al. 2018 found no change in elite U18s."),
             DoneCheck(
-                plainWords: "Your shot does not drift end to end across the session.",
-                unavailableReason: "The end-to-end change is produced by the shot doctor's over-session trend read-out rather than by the pass-check reader, so it is shown as a trend and cannot close the module. Compare a first and a last block instead; one pair can only resolve a 13 cm change in mean depth.",
+                plainWords: "Your shot does not change from the start of the session to the end.",
+                unavailableReason: "The change across a whole session is shown on your results as a trend rather than as a pass mark, so it cannot finish the module. Compare a first set with a last set instead — one pair can only see a change of about 13 cm in how deep your shots pass.",
+                detail: "depthTotalChangeOverSession comes from the over-session read-out, not the pass-check reader. Textbook Ch 15 §15.3.4; the 4.7 cm standard error of a set-of-10 mean depth is arithmetic (`DESIGN-MEMO-2026-09-13.md` §3.5).",
                 grade: .a,
                 source: "Textbook Ch 15 §15.3.4; the 4.7 cm standard error of a set-of-10 mean depth is arithmetic (`DESIGN-MEMO-2026-09-13.md` §3.5)."),
         ],
         faults: [
             CurriculumFault(
                 name: "Fading late in the session",
-                howItShowsInNumbers: "Entry angle falling and release time lengthening between the first and last blocks, with the makes following.",
+                howItShowsInNumbers: "Your ball falls at a shallower angle and takes longer to leave your hand between the first sets and the last ones, with the makes following.",
                 hypothesis: .fatigueDrift,
                 grade: .a,
                 sources: ["Bourdas et al. 2024 (38 high-level players, 12-min simulated game protocol).",
                           "Li et al. 2025 meta-analysis of 14 studies, n = 388: accuracy SMD 0.67 moderate, 1.39 severe."]),
             CurriculumFault(
                 name: "The shot drifting through the session",
-                howItShowsInNumbers: "Total change in crossing depth from the first counted shot to the last, reported as a total and never as a slope.",
+                howItShowsInNumbers: "The total change in how deep your shots pass, from the first counted shot to the last, reported as a total and never as a trend line.",
                 hypothesis: .withinSessionDrift,
                 grade: .a,
                 sources: ["Textbook Ch 15 §15.3.4. That drift can happen is established; that it happens to you is measured (Slawinski et al. 2018 found none in elite U18s)."]),
             CurriculumFault(
                 name: "\"Fatigue always flattens your arc\"",
-                howItShowsInNumbers: "Sometimes nothing at all. Elite U18s showed zero release change after repeated sprints, and moderate fatigue had no significant three-point effect in the meta-analysis.",
+                howItShowsInNumbers: "Sometimes nothing at all. Elite juniors showed no change at all after repeated sprints, and being moderately tired had no significant effect on three-point shooting in the pooled studies.",
                 hypothesis: nil,
                 grade: .d,
                 sources: ["Slawinski et al. 2018 (no release change after repeated sprints in elite U18s).",
                           "Li et al. 2025 (no significant three-point effect at moderate fatigue). Measure drift; never assume it."]),
             CurriculumFault(
                 name: "\"A defender changes your mechanics\"",
-                howItShowsInNumbers: "At skilled level, not measurably — what widens is the spread, not the mean. In NBA games, contests raised depth variance 56 % and left–right variance 38 % without biasing the mechanics.",
+                howItShowsInNumbers: "At skilled level, not measurably — what widens is the scatter, not the average. In NBA games, contested shots scattered 56 % more front to back and 38 % more left to right without the technique changing.",
                 hypothesis: nil,
                 grade: .a,
                 sources: ["Amaro et al. 2025: no significant effect of opposition or noise on jump height, release height, release angle or velocity in 18 national-level players (all p ≥ 0.092, η²p ≤ 0.004).",
                           "Daly-Grafstein & Bornn 2020: tight contests biased shots short and raised depth variance 56 %, lateral variance 38 %."]),
         ],
         openQuestions: [
-            "ArcLab cannot film a defender or a shot clock; this module is scored on blocks inside your own session, which is a weaker condition than a game.",
-            "Drift needs a first and a last block at the same spot in the same session, and the pair only resolves a large change — three session pairs pooled resolve about 7.6 cm.",
+            "ArcLab cannot film a defender or a shot clock, so this module is scored on sets inside your own session, which is a weaker test than a game.",
+            "Spotting drift needs a first and a last set at the same spot in the same session, and one pair only shows a big change — three session pairs together show about 7.6 cm.",
         ])
+}
+
+// MARK: - Finding a drill's card again
+
+/// Every drill the app ships, addressable by name.
+///
+/// A saved practice block records the drill's *name* (and, for a plan's blocks, only an instruction
+/// sentence that begins with it). The block card needs the drill's plain lines back so it can show
+/// **Do this** large instead of the paragraph the store pasted together. `PracticeStore` is owned
+/// elsewhere, so this reads what it writes rather than changing it.
+public enum DrillDirectory {
+
+    /// Curriculum first, then the plan library. Names repeat across the two — the same drill is
+    /// taught in a module and prescribed by a fix — and the curriculum copy is the fuller one.
+    public static var all: [(name: String, card: DrillCard)] {
+        var out: [(String, DrillCard)] = []
+        for m in Curriculum.modules {
+            for d in m.drills {
+                if let c = d.card { out.append((d.drill.name, c)) }
+            }
+        }
+        for id in HypothesisID.allCases {
+            let d = FixLibrary.package(for: id).drill
+            if let c = d.plainCard, !out.contains(where: { $0.0 == d.name }) { out.append((d.name, c)) }
+        }
+        return out
+    }
+
+    /// The card for a drill named exactly this. Nil for a name we do not ship.
+    public static func card(named name: String?) -> DrillCard? {
+        guard let name, !name.isEmpty else { return nil }
+        return all.first { $0.name == name }?.card
+    }
+
+    /// The card for a practice block, found by its recorded drill name first and then by the drill
+    /// name its instruction was built from. Nil when the block is a warm-up or a retention set,
+    /// which are not drills and have nothing to look up.
+    public static func card(forBlockNamed name: String?, instruction: String) -> DrillCard? {
+        if let c = card(named: name) { return c }
+        // The store writes "<drill name>, set 1 of 2: …" and "<module> — <drill name>, step 1 …".
+        // Longest name first, so "Distance ladder" never loses to a shorter name inside it.
+        return all.sorted { $0.name.count > $1.name.count }
+            .first { instruction.contains($0.name) }?.card
+    }
 }

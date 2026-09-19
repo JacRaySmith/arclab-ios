@@ -88,11 +88,16 @@ struct PlanView: View {
                 Text("\(package.drill.sets) sets × \(package.drill.reps) shots — \(package.drill.totalShots) in all")
                     .font(.footnote.monospacedDigit())
                 Text(package.drill.spots.isEmpty
-                     ? "At \(spot.rawValue.lowercased()), where the finding was made."
-                     : "Spots: \(package.drill.spots.map(\.rawValue).joined(separator: ", "))")
+                     ? "At \(spot.displayLower), where the finding was made."
+                     : "Spots: \(package.drill.spots.spotList)")
                     .font(.footnote)
-                Text(package.drill.constraint).font(.footnote)
-                Text(package.drill.schedule).font(.caption).foregroundStyle(.secondary)
+                if let card = package.drill.plainCard {
+                    DrillCardView(card: card)
+                } else {
+                    // `releaseHeightDrift` ships no drill on purpose; its constraint says so.
+                    Text(package.drill.constraint).font(.footnote)
+                    Text(package.drill.schedule).font(.caption).foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } header: {
@@ -120,10 +125,16 @@ struct PlanView: View {
     private var checkSection: some View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
-                Text(package.passCheck.description).font(.footnote)
-                Text("Measure: \(PracticeNames.measure(package.passCheck.measure).name) · at least \(package.passCheck.minimumN) accepted shots in the next session, or the check says it cannot tell.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                Text(GateWords.sentence(package.passCheck)).font(.footnote)
                 Text(package.retentionRule).font(.footnote)
+                if let precise = package.passCheck.detail {
+                    DisclosureGroup("The exact version") {
+                        Text("\(PracticeNames.measure(package.passCheck.measure).name) — \(precise)")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.caption2)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } header: {
@@ -141,7 +152,7 @@ struct PlanView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Baseline").font(.caption.bold())
-                        Text("\(p.plan.baselineSessionDate, format: .dateTime.day().month().year().hour().minute()) at \(p.plan.spot.rawValue), n = \(p.plan.baselineAcceptedShots) accepted shots.")
+                        Text("\(p.plan.baselineSessionDate, format: .dateTime.day().month().year().hour().minute()) at \(p.plan.spot.display), from \(p.plan.baselineAcceptedShots) counted shots.")
                             .font(.caption)
                         if let v = p.plan.baselineValue {
                             Text(String(format: "%@ = %.3f at the start.", p.plan.baselineMeasure, v))
@@ -225,11 +236,11 @@ struct PlanView: View {
                     Label("Start this plan instead", systemImage: "arrow.triangle.2.circlepath")
                 }
                 if let other = activeOther {
-                    Text("Currently scoring: \(DoctorNames.hypothesis(other.package.hypothesis)) at \(other.spot.rawValue), chosen \(other.plan.chosenDate, format: .dateTime.day().month().year()).")
+                    Text("Currently scoring: \(DoctorNames.hypothesis(other.package.hypothesis)) at \(other.spot.display), chosen \(other.plan.chosenDate, format: .dateTime.day().month().year()).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else if doctor.store.sessions(at: spot).isEmpty {
-                Text("There is no saved session at \(spot.rawValue.lowercased()) to take a baseline from. Save one with that spot and the plan can be started and scored.")
+                Text("There is no saved session at \(spot.displayLower) to take a baseline from. Save one with that spot and the plan can be started and scored.")
                     .font(.footnote).foregroundStyle(.secondary)
             } else {
                 Button {
