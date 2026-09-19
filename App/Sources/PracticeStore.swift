@@ -105,6 +105,36 @@ struct PracticeBlock: Codable, Identifiable, Sendable {
     }
 }
 
+/// One proposal from the next-block engine (`NextBlock.decide`), written into the session so the
+/// day's sequence survives a relaunch.
+///
+/// A proposal is never a second kind of block: when it is for today it materialises an ordinary
+/// `PracticeBlock` in `blocks` and keeps that block's id here, alongside the words that say why the
+/// block was proposed. When the day's cap is reached no block is created and the proposal carries
+/// `dayDoneReason` instead — it is then tomorrow's first block.
+struct PracticeProposal: Codable, Identifiable, Sendable {
+    var id: UUID
+    var createdAt: Date
+    /// `NextBlock.ReasonKey.rawValue`. Logged, never shown in a `Text`.
+    var reasonKey: String
+    var role: PracticeRole
+    var spot: ShotSpot
+    var shots: Int
+    /// The one line of why: which number, from how many shots, and the grade of the rule.
+    var reason: String
+    /// What the extra shots will let the app tell.
+    var whatItBuys: String
+    var instruction: String
+    /// Non-nil when the cap was reached: this proposal is tomorrow's first block, not today's.
+    var dayDoneReason: String?
+    /// The scored block this proposal was made after — one proposal per scored block.
+    var afterBlockID: UUID?
+    /// The block created for it in today's session. Nil when the proposal is for tomorrow.
+    var blockID: UUID?
+    /// Set the moment the shooter starts recording the block this proposed.
+    var acceptedAt: Date?
+}
+
 struct PracticeSession: Codable, Identifiable, Sendable {
     var id: UUID
     var date: Date
@@ -112,10 +142,29 @@ struct PracticeSession: Codable, Identifiable, Sendable {
     var planID: UUID?
     var planHypothesis: String?
     var blocks: [PracticeBlock]
+    /// The day's proposed sequence, oldest first. Optional so every practice.json written before the
+    /// next-block engine existed still decodes.
+    var proposals: [PracticeProposal]?
 
     var isComplete: Bool { !blocks.isEmpty && blocks.allSatisfy(\.isDone) }
     var nextBlock: PracticeBlock? { blocks.first { !$0.isDone } }
     var doneCount: Int { blocks.filter(\.isDone).count }
+    /// The block that was scored most recently today.
+    var lastScoredBlock: PracticeBlock? {
+        blocks.filter(\.isDone).max { ($0.completedAt ?? .distantPast) < ($1.completedAt ?? .distantPast) }
+    }
+    /// What each block actually put through the analyser, falling back to what it asked for.
+    var shotsToday: Int { blocks.filter(\.isDone).reduce(0) { $0 + ($1.measuredShots ?? $1.intendedShots) } }
+    func proposal(forBlock id: UUID) -> PracticeProposal? { proposals?.first { $0.blockID == id } }
+}
+
+/// The one thing to do next, for the Today card and for practice home. There is always one of these
+/// once a session exists: a block to record, or a finished day with tomorrow's first block named.
+enum PracticeNextAction {
+    /// Record this block now. `number` is its place in today's list, 1-based.
+    case record(block: PracticeBlock, number: Int, proposal: PracticeProposal?)
+    /// The day's cap is reached — or the ladder ran out. `tomorrow` is the first block of the next day.
+    case dayDone(reason: String, tomorrow: PracticeProposal)
 }
 
 // MARK: - Plain names for the engine's identifiers
@@ -304,6 +353,131 @@ final class PracticeStore {
             instruction: "Ten shots at \(spot.rawValue) with no cue at all — normal routine, nothing to think about. \(package.retentionRule)",
             cue: nil))
         return blocks
+    }
+
+    // MARK: The day as a sequence — what comes after the block that was just scored
+
+    /// The one thing to do next. Pure read: views call it from `body`, and `refreshProposal` is what
+    /// actually moves anything. Nil only when there is no practice session today at all.
+    var nextAction: PracticeNextAction? {
+        guard let session = todaysSession else { return nil }
+        if let next = session.nextBlock, let i = session.blocks.firstIndex(where: { $0.id == next.id }) {
+            return .record(block: next, number: i + 1, proposal: session.proposal(forBlock: next.id))
+        }
+        if let last = session.proposals?.last, let why = last.dayDoneReason {
+            return .dayDone(reason: why, tomorrow: last)
+        }
+        return nil
+    }
+
+    /// Propose the next block, if the day is waiting on one.
+    ///
+    /// Called after a block is scored and from the screens that show the day. It does nothing while a
+    /// block is still waiting to be recorded, and it proposes **once** per scored block — the
+    /// proposal is written into the session, so it is the same block after a relaunch.
+    @discardableResult
+    func refreshProposal(doctor: ShotDoctorModel) -> PracticeProposal? {
+        guard let index = sessions.firstIndex(where: { Calendar.current.isDateInToday($0.date) }) else { return nil }
+        let session = sessions[index]
+        guard !session.blocks.isEmpty, session.nextBlock == nil else { return nil }
+        guard let last = session.lastScoredBlock else { return nil }
+        if let existing = session.proposals?.last, existing.afterBlockID == last.id { return existing }
+
+        let decision = NextBlock.decide(PracticeStore.engineState(session: session, last: last, doctor: doctor))
+        let plan = decision.plan
+        let role = PracticeRole(rawValue: plan.role.rawValue) ?? .drill
+        let spot = ShotSpot(rawValue: plan.spot.rawValue) ?? .other
+        let cue = plan.cued ? doctor.planProgress?.package.cue : nil
+
+        var proposal = PracticeProposal(
+            id: UUID(), createdAt: Date(), reasonKey: plan.reasonKey.rawValue, role: role, spot: spot,
+            shots: max(1, plan.shots), reason: plan.reason, whatItBuys: plan.whatItBuys,
+            instruction: plan.instruction, dayDoneReason: decision.dayDoneReason,
+            afterBlockID: last.id, blockID: nil, acceptedAt: nil)
+
+        if decision.isToday {
+            let block = PracticeBlock(role: role, spot: spot, intendedShots: proposal.shots,
+                                      instruction: plan.instruction, cue: cue)
+            proposal.blockID = block.id
+            sessions[index].blocks.append(block)
+        }
+        sessions[index].proposals = (sessions[index].proposals ?? []) + [proposal]
+        persist()
+        ActivityLog.shared.event("practice.next.proposed", [
+            "role": role.rawValue, "spot": spot.rawValue, "reason": plan.reasonKey.rawValue,
+            "shots": proposal.shots, "n": last.measureN, "afterRole": last.role.rawValue,
+            "afterPassed": last.check?.passed, "dayDone": decision.dayDoneReason != nil,
+            "blocksDone": session.doneCount, "shotsToday": session.shotsToday,
+        ])
+        return proposal
+    }
+
+    /// The shooter started recording the block a proposal asked for.
+    func markProposalAccepted(blockID: UUID, in sessionID: UUID) {
+        guard let s = sessions.firstIndex(where: { $0.id == sessionID }),
+              let p = sessions[s].proposals?.firstIndex(where: { $0.blockID == blockID }),
+              sessions[s].proposals?[p].acceptedAt == nil else { return }
+        sessions[s].proposals?[p].acceptedAt = Date()
+        let proposal = sessions[s].proposals?[p]
+        persist()
+        ActivityLog.shared.event("practice.next.accepted", [
+            "role": proposal?.role.rawValue, "spot": proposal?.spot.rawValue,
+            "reason": proposal?.reasonKey, "shots": proposal?.shots,
+        ])
+    }
+
+    /// Everything the decision table is allowed to know, read out of the plan and the day so far.
+    /// Nothing here is invented: the measure, its floor and its grade come from the fix package, the
+    /// spread-with-distance verdict from the pooled diagnosis (nil when it was never measured).
+    private static func engineState(session: PracticeSession, last: PracticeBlock,
+                                    doctor: ShotDoctorModel) -> NextBlock.State {
+        let progress = doctor.planProgress
+        let names = progress.map { PracticeNames.measure($0.package.passCheck.measure) }
+        var narrows = false
+        if let target = progress?.package.passCheck.target {
+            switch target {
+            case .narrowByDetectableRatio, .narrowByFraction: narrows = true
+            case .insideBand, .moveBy, .reportOnly: narrows = false
+            }
+        }
+        var widens: Bool?
+        if let verdict = doctor.diagnosis?.distance.versatility.verdict {
+            switch verdict {
+            case .spreadWidens: widens = true
+            case .spreadStable, .spreadNarrows: widens = false
+            case .undecided: widens = nil
+            }
+        }
+        let lastSpot = DoctorSpot(rawValue: last.spot.rawValue) ?? .other
+        return NextBlock.State(
+            last: NextBlock.LastBlock(
+                role: NextBlock.Role(rawValue: last.role.rawValue) ?? .drill,
+                spot: lastSpot,
+                countedShots: last.acceptedShots,
+                measureValue: last.measureValue,
+                measureN: last.measureN,
+                measureUnavailableReason: last.measureUnavailableReason,
+                hasCheck: last.check != nil,
+                checkPassed: last.check?.passed,
+                checkBaselineValue: last.check?.baselineValue,
+                checkTarget: last.check?.target,
+                fromLearnModule: last.moduleID != nil),
+            hasPlan: progress != nil,
+            hasBaseline: progress?.baseline != nil,
+            planSpot: progress.flatMap { DoctorSpot(rawValue: $0.spot.rawValue) } ?? lastSpot,
+            measureName: names?.name ?? "the number your plan is scored on",
+            measureUnit: names?.unit ?? "",
+            measureDecimals: names?.decimals ?? 2,
+            grade: progress?.package.grade ?? .d,
+            minimumN: progress?.package.passCheck.minimumN ?? ShotDoctor.attributionFloor,
+            targetNarrowsSpread: narrows,
+            drillName: progress?.package.drill.name ?? "Practice block",
+            drillReps: max(1, progress?.package.drill.reps ?? 10),
+            drillLadder: progress?.package.drill.spots ?? [],
+            spotsDoneToday: session.blocks.filter(\.isDone).compactMap { DoctorSpot(rawValue: $0.spot.rawValue) },
+            blocksDoneToday: session.doneCount,
+            shotsToday: session.shotsToday,
+            spreadWidensWithDistance: widens)
     }
 
     // MARK: Adding a Learn module's drill to today

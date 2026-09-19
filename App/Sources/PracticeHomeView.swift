@@ -29,7 +29,11 @@ struct PracticeHomeView: View {
         .navigationTitle("Today's plan")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            let s = practice.ensureToday(doctor: doctor)
+            let built = practice.ensureToday(doctor: doctor)
+            // Every block done is not the end of the day: propose what follows from what the last
+            // block measured before this screen lists anything.
+            practice.refreshProposal(doctor: doctor)
+            let s = practice.session(built.id) ?? built
             sessionID = s.id
             ActivityLog.shared.event("screen", ["name": "practice.home", "blocks": s.blocks.count, "done": s.doneCount,
                                                 "plan": s.planHypothesis])
@@ -127,11 +131,16 @@ struct PracticeHomeView: View {
     @ViewBuilder
     private func continueSection(_ s: PracticeSession) -> some View {
         Section {
+            // There is always one thing to do next: the block that is waiting, or — once the day's
+            // limit is reached — what tomorrow starts with. This row is never empty.
+            if let action = practice.nextAction {
+                PracticeNextCard(action: action)
+            }
             if let next = s.nextBlock {
                 NavigationLink {
                     PracticeBlockView(sessionID: s.id, block: next, practice: practice, doctor: doctor, store: store)
                 } label: {
-                    Label(s.doneCount == 0 ? "Start the first block" : "Continue: \(PracticeNames.role(next.role)) at \(next.spot.rawValue)",
+                    Label(s.doneCount == 0 ? "Start the first block" : "Record it: \(PracticeNames.role(next.role)) at \(next.spot.rawValue)",
                           systemImage: "play.circle.fill")
                 }
             }

@@ -95,6 +95,14 @@ struct PracticeBlockView: View {
             LabeledContent("Spot", value: current.spot.rawValue)
             LabeledContent("Shots", value: "\(current.intendedShots)")
             Text(current.instruction).font(.subheadline)
+            // When this block was proposed by the day's sequence, it says which number asked for it
+            // and what recording it will let ArcLab tell.
+            if let p = practice.session(sessionID)?.proposal(forBlock: current.id) {
+                Text(p.reason).font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(p.whatItBuys).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let cue = current.cue {
                 Label(cue, systemImage: "quote.opening")
                     .font(.subheadline.weight(.semibold))
@@ -239,10 +247,18 @@ struct PracticeBlockView: View {
                     Label("Open the saved block", systemImage: "list.number")
                 }
             }
-            if let next = nextBlock {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Next: \(PracticeNames.role(next.role)) · \(next.intendedShots) at \(next.spot.rawValue)").font(.subheadline.bold())
-                    Text(next.cue ?? "No cue — shoot it exactly as you normally would.").font(.subheadline)
+            // What follows from what this block just measured. The engine has already proposed it
+            // (`finishBlock`), so there is always something here — a block, or the day's last word
+            // and tomorrow's first block.
+            if let action = practice.nextAction, practice.todaysSession?.id == sessionID {
+                PracticeNextCard(action: action)
+                if let next = nextBlock {
+                    NavigationLink {
+                        PracticeBlockView(sessionID: sessionID, block: next, practice: practice,
+                                          doctor: doctor, store: store)
+                    } label: {
+                        Label("Go to that block", systemImage: "play.circle.fill")
+                    }
                 }
             } else {
                 Text("That was the last block of the session.").font(.subheadline)
@@ -305,6 +321,8 @@ struct PracticeBlockView: View {
         b.blockNote = nil
         current = b
         practice.replace(b, in: sessionID)
+        // A proposed block is accepted when it is actually being shot, not when it is read.
+        practice.markProposalAccepted(blockID: current.id, in: sessionID)
         ActivityLog.shared.event("practice.block.start", [
             "role": current.role.rawValue, "spot": current.spot.rawValue,
             "intended": current.intendedShots, "file": recorded.movieFileName,
@@ -351,6 +369,8 @@ struct PracticeBlockView: View {
         practice.replace(scored, in: sessionID)
         // Let the plan record which sessions its check and retention actually used.
         doctor.recordPlanSessions()
+        // The day is a sequence: propose the next block from what this one measured, immediately.
+        practice.refreshProposal(doctor: doctor)
     }
 
     /// The first drill block of this practice session that has already been saved — what a retention

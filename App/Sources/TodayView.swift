@@ -51,7 +51,13 @@ struct TodayView: View {
                 }
             }
         }
-        .task(id: refreshKey) { card = makeCard() }
+        .task(id: refreshKey) {
+            // The day is a sequence: if today's blocks are all done, the engine proposes the next one
+            // before this screen draws its button. `ensureToday` is still not called — a day with no
+            // practice session stays that way until the shooter starts one.
+            practice.refreshProposal(doctor: doctor)
+            card = makeCard()
+        }
         .onAppear {
             ActivityLog.shared.event("screen", ["name": "today",
                                                 "savedSessions": store.sessions.count,
@@ -159,25 +165,57 @@ struct TodayView: View {
         return (s, next, index + 1)
     }
 
+    /// The day's one next thing. Never empty once a practice session exists: a block to record, or a
+    /// finished day with tomorrow's first block named (`PracticeStore.nextAction`).
+    private var nextAction: PracticeNextAction? { practice.nextAction }
+
+    /// Non-nil only when today's cap is reached, so the card can take the place of the record button.
+    private var dayDoneAction: PracticeNextAction? {
+        if let action = nextAction, case .dayDone = action { return action }
+        return nil
+    }
+
+    @ViewBuilder
     private var primarySection: some View {
-        Section {
-            Button {
-                going = openBlock.map { .block($0.block.id) } ?? .guided
-            } label: {
-                if let open = openBlock {
-                    primaryLabel(title: "Record block \(open.number): \(open.block.spot.rawValue) × \(open.block.intendedShots)",
-                                 subtitle: PracticeNames.role(open.block.role),
-                                 symbol: "record.circle")
-                } else {
-                    primaryLabel(title: "Record or analyze a session",
-                                 subtitle: "Film it here, or pick a clip you already have",
+        if let done = dayDoneAction {
+            Section {
+                PracticeNextCard(action: done)
+                Button {
+                    going = .guided
+                } label: {
+                    primaryLabel(title: "Record another session anyway",
+                                 subtitle: "The daily limit is ArcLab's own rule, not a finding",
                                  symbol: "basketball")
                 }
+                .primaryAction()
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
-            .primaryAction()
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+        } else {
+            Section {
+                Button {
+                    going = openBlock.map { .block($0.block.id) } ?? .guided
+                } label: {
+                    if let open = openBlock {
+                        primaryLabel(title: "Record block \(open.number): \(open.block.spot.rawValue) × \(open.block.intendedShots)",
+                                     subtitle: PracticeNames.role(open.block.role),
+                                     symbol: "record.circle")
+                    } else {
+                        primaryLabel(title: "Record or analyze a session",
+                                     subtitle: "Film it here, or pick a clip you already have",
+                                     symbol: "basketball")
+                    }
+                }
+                .primaryAction()
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                // Why this block, and what recording it lets ArcLab tell you.
+                if let action = nextAction, case .record = action {
+                    PracticeNextCard(action: action, showsTitle: false)
+                }
+            }
         }
     }
 

@@ -16,6 +16,7 @@ struct PracticeSummaryView: View {
         List {
             if let s = session {
                 headerSection(s)
+                nextSection(s)
                 blocksSection(s)
             }
             planSection
@@ -24,6 +25,7 @@ struct PracticeSummaryView: View {
         .navigationTitle("Session summary")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
+            practice.refreshProposal(doctor: doctor)
             ActivityLog.shared.event("screen", ["name": "practice.summary", "sessionID": sessionID.uuidString,
                                                 "done": session?.doneCount, "blocks": session?.blocks.count])
         }
@@ -43,6 +45,27 @@ struct PracticeSummaryView: View {
                 .font(.caption).foregroundStyle(.secondary)
         } header: {
             Text(s.date.formatted(date: .abbreviated, time: .shortened))
+        }
+    }
+
+    /// A summary is not the end of the day. This section is what comes next, in the same words the
+    /// Shoot tab and practice home use — a block to record, or tomorrow's first block.
+    @ViewBuilder
+    private func nextSection(_ s: PracticeSession) -> some View {
+        if Calendar.current.isDateInToday(s.date), let action = practice.nextAction {
+            Section {
+                PracticeNextCard(action: action)
+                if let next = s.nextBlock {
+                    NavigationLink {
+                        PracticeBlockView(sessionID: s.id, block: next, practice: practice,
+                                          doctor: doctor, store: store)
+                    } label: {
+                        Label("Record that block", systemImage: "play.circle.fill")
+                    }
+                }
+            } header: {
+                Text("What's next")
+            }
         }
     }
 
