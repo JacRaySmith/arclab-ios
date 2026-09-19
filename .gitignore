@@ -9,3 +9,6 @@ tools/pytrack/runs/
 tools/pytrack/shots/
 *.pkl
 *.mp4
+
+# Agent worktrees
+.claude/worktrees/
