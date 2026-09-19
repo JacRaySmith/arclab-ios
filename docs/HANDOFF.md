@@ -1,3 +1,36 @@
+# START HERE — state on 2026-09-19 (morning PT), written for the next agent
+
+**1.3.1 shipped today** (main, pushed; phone has it; bundle version now 1.3.1 (2) so `app.launch` identifies
+the build). Read `docs/BIG-CHANGES.md` first — it is the ranked list of structural changes with log evidence
+and gates (B1 three-point acceptance 33 % is the biggest measurement problem; B5 body pose is 12 s/shot).
+
+What 1.3.1 changed (three Opus agents in worktrees, merged by hand, all gates re-run: 254 package tests,
+GeometryHarness GATE PASS, app Release build):
+- **Capture** (`CaptureView`, `CaptureController`, `GuidedCheckpoint.swift`, `TodayView`): the landscape overlay
+  bug had four causes (safe-area vs full-screen geometry, sensor vs rotated aspect, refused
+  `requestGeometryUpdate` never retried, rotation coordinator bound to a dead layer) — the overlay is now placed
+  by `layerRectConverted(fromMetadataOutputRect:)`. The black screen on 09-18 left no crash report; the session
+  had no runtime-error/interruption observers and a teardown use-after-free on the sample-buffer delegate. Both
+  fixed and logged (`capture.*` events, `previousRunEndedCleanly` on `app.launch`). A guided session now
+  checkpoints to disk after record / scan / each shot and Today offers "Resume the session you were in".
+  Photos-imported clips are not checkpointed (temp copy).
+- **Practice day as a sequence** (`NextBlock.swift` in ShotGeometry + `PracticeStore`, `PracticeNextCard`):
+  after every scored block the app proposes the next one with the number, its n and the grade; day cap at 8
+  blocks / 100 shots (stated as convention); 24 table tests. The user's 09-18 case (plan's baseline session
+  deleted) is handled with a stated reason.
+- **Plain-language drills** (`Curriculum.swift`, `FixLibrary.swift`, `DrillCard`, `DrillDirectory`, Learn/Plan/
+  block-card views): Setup / Do this / What the app watches / Done when / Why (grade), precise version behind
+  `detail`; `DrillCopyTests` fails on jargon so it cannot regress.
+
+**Next, in order:** 1. Ask the user to run one guided block on 1.3.1 and pull the log: confirm `capture.configured`
+/ `capture.running` appear, the overlay is right in both landscape orientations, and `previousRunEndedCleanly`
+is true. 2. B1 in BIG-CHANGES (three-point acceptance) — needs the 30–45° off-line clip. 3. B5 (body pose only
+over the frames the coachable measures use, deferred behind ball metrics). 4. The rest of the open items below.
+
+Build/phone/log commands, honest limits and the 1.3 open items are unchanged below.
+
+---
+
 # START HERE — state on 2026-09-16 (evening PT), written for the next agent
 
 **Read in this order:** CLAUDE.md (rules, never modified) → this section → docs/PLAN-1.3-2026-09-16.md and
