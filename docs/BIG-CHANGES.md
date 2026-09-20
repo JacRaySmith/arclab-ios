@@ -55,18 +55,18 @@ death at any step, with the clip kept on disk until the session is saved or disc
 step, and a resume card on launch. Also: log camera runtime errors and interruptions, and whether the previous
 run ended cleanly, so the next black screen is diagnosable. *Gate:* kill the app at each of the four steps and
 resume with no lost shot; `analysis.resume` follows every `app.launch` with `previousRunEndedCleanly: false`.
-*Status:* in progress 2026-09-19 (capture agent).
+*Status:* shipped in 1.3.1 (2026-09-19); phone verification pending.
 
 **B3. The practice day is a sequence, not one block.** After every scored block the app proposes the next
 one with the reason (which number, its n, the rule's grade) and what the extra data will let it tell; a day
 cap with tomorrow's first block when reached; never an empty Today. *Gate:* the plan's measure computed
 identically before and after; every proposal carries n and grade; blocks under the floor say "not enough
-shots to tell". *Status:* in progress 2026-09-19 (practice agent).
+shots to tell". *Status:* shipped in 1.3.1; game-like variants added in 1.4.
 
 **B4. A plain-language layer with a lint.** Every drill and gate the user reads follows Setup / Do this / What
 the app watches / Done when / Why (grade); the precise statistical version sits behind a tap; a unit test
 fails on jargon so it cannot regress. *Gate:* the copy lint passes over every curriculum string; the block card
-is readable at 5 m. *Status:* in progress 2026-09-19 (drills agent).
+is readable at 5 m. *Status:* shipped in 1.3.1; the lint covers the 1.4 modules too.
 
 **B5. Body pose costs 12 s per shot for two coachable numbers.** Only jump height (ICC 0.92) and head
 horizontal travel (0.86) are coachable at 7 m; the pass runs over every window regardless. *Change:* run
@@ -91,9 +91,11 @@ bearing (38° parallax on the reference clip). Wire `RimCalibration`'s rim posit
 the Core ML frames, and choose the decode scale per pass, all in one re-baseline so the gate numbers move
 once. *Gate:* `docs/PHASE<N>-REPORT.md` with before/after on the phone shots. *Status:* not started.
 
+**B10. Film auto-tagging** — see `docs/DESIGN-FILM-REVIEW-2026-09-19.md`; v1 (1.4) is manual tags plus rim-scanner shot candidates. *Gate:* a measured candidate recall on real game film before any auto-tag claim. *Status:* design only.
+
 **B9. The build must identify itself.** The app still reports `version 0.1.0 build 1` in every `app.launch`
 while the docs and GitHub tag say 1.3, so the log cannot tell which build a behaviour came from. *Change:*
-`MARKETING_VERSION` / build number set from the release tag at every phone install. *Status:* 2026-09-19.
+`MARKETING_VERSION` / build number set from the release tag at every phone install. *Status:* done 2026-09-19 (1.3.1 (2)).
 
 ## 2. Footage the user owes (blocks B1, B6 and the footwork work)
 

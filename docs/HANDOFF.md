@@ -1,3 +1,30 @@
+# START HERE — state on 2026-09-19 (afternoon PT): 1.4 merged on main
+
+**1.4 = 1.3.1 (morning, below) + four more Opus worktree agents merged by hand.** Entry points: You → Games, You → Your body
+(jump test), Review → Sessions and Film review, Learn → Ball handling / Handling under pressure / Practice against games,
+the new IQ tab. What landed:
+- **Fixes:** the 3-D body went black during playback because `SCNView.rendersContinuously` was false while a Timer moved
+  node transforms outside SceneKit's change tracking (`BodyPlayerView`, `FormModelView`); now driven by `isAnimating`,
+  `body.player.frame` timings logged. Sessions: `SessionsListView` → `SavedSessionView` with an explicit delete and an
+  impact dialog (which practice blocks become unscored, whether the plan loses its baseline, which files go or stay).
+- **Practice→game:** curriculum modules `ballHandling` (5 drills, each ends in a measurable shot) and
+  `handlingUnderPressure` (4); `NextBlock.GameLikeVariant` (random-spot B, decision-called C, fatigued A, contested C) offered
+  as alternatives after a drill passes / retention holds, never scored against the plan's baseline; `GameLog` + practice-vs-
+  game card with the 20-shot floor and the Wald detectable difference at the user's n; evidence in
+  `docs/research/ball-handling-and-transfer-2026-09-19.md` (Kozar 1995 effect size UNVERIFIED).
+- **Jump test** (`JumpTest.swift` + `App/Sources/Jump`): flight time from the lower ankle leaving/returning to its floor
+  baseline at 240 fps (σ_h ≈ 7 mm on a 0.5 s flight), hip-rise cross-check scaled by stated height; rim ruler refused;
+  **never run on a real jump yet** — first thing to check on the phone. Film review v1 (`App/Sources/Film`): manual
+  possession tagging with rim-scanner shot candidates when the rim is marked; nothing auto-tagged;
+  `docs/DESIGN-FILM-REVIEW-2026-09-19.md` says what auto-tagging would need.
+- **IQ tab** (`App/Sources/IQ`): 24 first-person SceneKit scenarios with a freeze and decision-time capture, 59-question
+  quiz, progress with n floors (10 plays per principle), no "IQ score". Verified in the Simulator only.
+
+**Next:** 1. On the phone: one guided block (capture events, overlay), one 3-D playback, one jump test, one IQ session — pull
+the log. 2. The 1.3.1 list below (three-point acceptance B1, body-pose cost B5). 3. Backlog in docs/BIG-CHANGES.md.
+
+---
+
 # START HERE — state on 2026-09-19 (morning PT), written for the next agent
 
 **1.3.1 shipped today** (main, pushed; phone has it; bundle version now 1.3.1 (2) so `app.launch` identifies
