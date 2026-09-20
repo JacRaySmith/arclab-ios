@@ -80,7 +80,26 @@ struct PracticeBlock: Codable, Identifiable, Sendable {
     /// The curriculum drill's name, so the block card can say which drill it was.
     var drillName: String?
 
+    // Game-like blocks (added 2026-09-19, 1.4 "game"). A block shot under one condition of a game —
+    // shuffled spots, a call at the catch, straight after running, with a hand up. The app measures
+    // exactly the same numbers; what it cannot see is the defender, the clock and the call, so the
+    // condition is recorded as the shooter's word and labelled that way everywhere it is shown.
+    /// `NextBlock.GameLikeVariant.rawValue`, or nil for an ordinary block.
+    var gameLike: String?
+    /// For a shuffled block: the order the app generated, one `ShotSpot.rawValue` a shot. Empty or
+    /// nil for every other kind of block.
+    var spotSequence: [String]?
+    /// For a called-catch block: what the partner called, in order, as the shooter typed it in
+    /// afterwards. Nil when they did not, which is the normal case and not a gap.
+    var calls: [String]?
+
     var isDone: Bool { completedAt != nil }
+
+    /// The game-like condition, or nil. Written as the raw value so an unknown one from a future
+    /// build decodes as "no condition" rather than failing the whole file.
+    var gameLikeVariant: NextBlock.GameLikeVariant? {
+        gameLike.flatMap { NextBlock.GameLikeVariant(rawValue: $0) }
+    }
 
     /// The measure as a sentence with its n, or nil.
     var measureText: String? {
@@ -93,7 +112,8 @@ struct PracticeBlock: Codable, Identifiable, Sendable {
     }
 
     init(id: UUID = UUID(), role: PracticeRole, spot: ShotSpot, intendedShots: Int,
-         instruction: String, cue: String?, moduleID: String? = nil, drillName: String? = nil) {
+         instruction: String, cue: String?, moduleID: String? = nil, drillName: String? = nil,
+         gameLike: String? = nil, spotSequence: [String]? = nil) {
         self.id = id
         self.role = role
         self.spot = spot
@@ -102,6 +122,8 @@ struct PracticeBlock: Codable, Identifiable, Sendable {
         self.cue = cue
         self.moduleID = moduleID
         self.drillName = drillName
+        self.gameLike = gameLike
+        self.spotSequence = spotSequence
     }
 }
 
@@ -461,7 +483,8 @@ final class PracticeStore {
                 checkPassed: last.check?.passed,
                 checkBaselineValue: last.check?.baselineValue,
                 checkTarget: last.check?.target,
-                fromLearnModule: last.moduleID != nil),
+                fromLearnModule: last.moduleID != nil,
+                gameLike: last.gameLikeVariant),
             hasPlan: progress != nil,
             hasBaseline: progress?.baseline != nil,
             planSpot: progress.flatMap { DoctorSpot(rawValue: $0.spot.rawValue) } ?? lastSpot,
@@ -518,6 +541,80 @@ final class PracticeStore {
         return added
     }
 
+    // MARK: Game-like blocks (added 2026-09-19)
+
+    /// The game-like conditions the engine will offer right now, or empty.
+    ///
+    /// Empty is the normal answer and is not a failure: nothing game-like is offered until the
+    /// plan's number has actually moved, because a change that does not exist yet cannot be carried
+    /// anywhere. Pure read — `addGameLikeBlock` is what puts one in the day.
+    func gameLikeOffers(doctor: ShotDoctorModel) -> [NextBlock.Plan] {
+        guard let session = todaysSession, let last = session.lastScoredBlock else { return [] }
+        return NextBlock.gameLikeVariants(PracticeStore.engineState(session: session, last: last, doctor: doctor))
+    }
+
+    /// Put one of those offers into today's session. Returns the first block, or nil when there is
+    /// no session to put it in.
+    ///
+    /// A shuffled offer becomes **one block per set**, in the app's own order, because a recording
+    /// is saved at one spot: a single block spanning four spots would have to label every shot in it
+    /// with one of them, which would be a number nobody measured. Every other variant is one block.
+    @discardableResult
+    func addGameLikeBlock(_ plan: NextBlock.Plan, doctor: ShotDoctorModel) -> PracticeBlock? {
+        guard let variant = plan.gameLike else { return nil }
+        let session = ensureToday(doctor: doctor)
+        guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return nil }
+        let sequence = plan.spotSequence.isEmpty ? [plan.spot] : plan.spotSequence
+        let order = sequence.map(\.rawValue)
+        var added: [PracticeBlock] = []
+        for (i, doctorSpot) in sequence.enumerated() {
+            let spot = ShotSpot(rawValue: doctorSpot.rawValue) ?? .other
+            let step = sequence.count == 1 ? "" : " — set \(i + 1) of \(sequence.count)"
+            added.append(PracticeBlock(
+                role: PracticeRole(rawValue: plan.role.rawValue) ?? .drill,
+                spot: spot,
+                intendedShots: max(1, plan.shots),
+                instruction: "\(variant.title)\(step): \(plan.instruction) \(variant.limit)",
+                // A game-like block is deliberately un-cued: the condition is the constraint, and a
+                // cue on top of it would mean two changes at once and neither one scorable.
+                cue: nil,
+                gameLike: variant.rawValue,
+                spotSequence: sequence.count == 1 ? nil : order))
+        }
+        sessions[index].blocks.append(contentsOf: added)
+        persist()
+        ActivityLog.shared.event("game.block.added", [
+            "variant": variant.rawValue, "blocks": added.count,
+            "spots": order.joined(separator: ", "),
+            "shots": added.reduce(0) { $0 + $1.intendedShots },
+            "grade": variant.grade.letter,
+        ])
+        return added.first
+    }
+
+    /// Record what the partner called on a called-catch block, in the shooter's own words. Stored as
+    /// their word: the app never heard the call and the screen says so.
+    func recordCalls(_ calls: [String], for blockID: UUID, in sessionID: UUID) {
+        guard let s = sessions.firstIndex(where: { $0.id == sessionID }),
+              let b = sessions[s].blocks.firstIndex(where: { $0.id == blockID }) else { return }
+        let cleaned = calls.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        sessions[s].blocks[b].calls = cleaned.isEmpty ? nil : cleaned
+        persist()
+        ActivityLog.shared.event("game.block.calls", [
+            "variant": sessions[s].blocks[b].gameLike, "calls": cleaned.count,
+        ])
+    }
+
+    /// Every game-like block ever recorded, newest session first.
+    func gameLikeBlocks() -> [PracticeBlock] {
+        sessions.reversed().flatMap(\.blocks).filter { $0.gameLike != nil }
+    }
+
+    /// The session a block belongs to. Nil for a block that is not in the log.
+    func sessionID(forBlock id: UUID) -> UUID? {
+        sessions.first { $0.blocks.contains { $0.id == id } }?.id
+    }
+
     /// Every block recorded from a Learn module, oldest first. The Learn screen's progress is read
     /// out of these and out of nothing else: it is what was actually shot, never a self-assessment.
     func blocks(forModule id: CurriculumModuleID) -> [PracticeBlock] {
@@ -571,6 +668,21 @@ final class PracticeStore {
         b.measureN = readBack.n ?? blockDiagnosis.spot(planSpot)?.n
         if readBack.baselineValue == nil {
             b.measureUnavailableReason = "This block carries no \(names.name): \(readBack.sentence)"
+        }
+
+        // A game-like block is shot under a condition the plan's reference block was not — tired,
+        // shuffled, or with somebody in the way. Running the plan's check on it would report the
+        // condition as a failure of the fix, so the numbers are read out and the check is not run.
+        // The comparison it actually needs is an ordinary block at the same spot on the same day,
+        // which is what `NextBlock` proposes next.
+        if let variant = block.gameLikeVariant {
+            b.blockNote = "\(variant.title): shot under a condition your plan's reference block was not, so it is not scored against the plan. \(variant.limit) Compare it with an ordinary block at \(block.spot.rawValue) on the same day."
+            ActivityLog.shared.event("game.block.scored", [
+                "variant": variant.rawValue, "spot": block.spot.rawValue,
+                "measure": package.passCheck.measure.rawValue,
+                "value": b.measureValue, "n": b.measureN, "accepted": b.acceptedShots,
+            ])
+            return b
         }
 
         switch block.role {

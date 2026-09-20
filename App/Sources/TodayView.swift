@@ -320,11 +320,17 @@ struct TodayView: View {
             } label: {
                 Label("Ask about your shot", systemImage: "stethoscope")
             }
+            NavigationLink {
+                GameLikeBlocksView(practice: practice, doctor: doctor, store: store)
+            } label: {
+                Label("Game-like blocks", systemImage: "person.2")
+            }
             DisclosureGroup("What each of these is") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("**Practice plan** runs a session as blocks: a spot and a number of shots each, recorded in the app, analysed and saved by themselves, and scored against the one fix being worked on.")
                     Text("**Form clip** is the close-up one: the phone 3–4 m away with no rim in frame. It measures the body only — the shots are found from your own wrist, and no ball number is produced.")
                     Text("**Ask about your shot** answers a complaint from the sessions already saved, and says so when there are not enough shots to answer it.")
+                    Text("**Game-like blocks** are the same shot under one condition a game has — shuffled spots, a call at the catch, straight after running, with a hand up. They are offered once your plan's number has moved, because a change has to exist before it can be carried anywhere.")
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)

@@ -57,6 +57,88 @@ public enum NextBlock {
         case planNeedsNewBaseline
         /// No plan yet: more shots at one spot is what makes a finding possible.
         case noPlanMoreShots
+        /// The last block was shot under a game-like condition, which the plan's check cannot read.
+        case afterGameLikeBlock
+        // Added 2026-09-19 (1.4 "game"). These four are never the main proposal: they arrive as
+        // `Decision.alternatives` once a change has been measured, because a change that only
+        // exists in an empty gym has not been shown to exist anywhere else.
+        case gameLikeRandomSpot
+        case gameLikeDecisionCalled
+        case gameLikeFatigued
+        case gameLikeContested
+    }
+
+    // MARK: - Game-like block variants
+    //
+    // Added 2026-09-19 for 1.4 "game": *"There is often a big split between practice shooting and
+    // game shooting."* Research: `docs/research/ball-handling-and-transfer-2026-09-19.md`.
+    //
+    // Each variant puts one condition of a game on the ordinary block. The app records exactly the
+    // same shot numbers it always does — it cannot see a defender, a clock or a score — and each
+    // variant carries that limit in its own words rather than in a footnote.
+
+    public enum GameLikeVariant: String, Sendable, Codable, Equatable, CaseIterable, Identifiable {
+        /// Spots shuffled, in an order the app generated and therefore knows.
+        ///
+        /// It shuffles **sets**, not single shots, and that is a limit rather than a preference: a
+        /// recording is saved at one spot, and the brief's own rule is that shots from different
+        /// spots are different populations and are never pooled. One shot at each of four spots in
+        /// one clip would have to label all four with one spot, which would be a made-up number.
+        case randomSpot
+        /// A partner calls catch-and-shoot, one-dribble pull-up or drive at the moment of the catch.
+        case decisionCalled
+        /// After a 60–90 s conditioning bout, stated as such.
+        case fatigued
+        /// A partner closes out with a hand up.
+        case contested
+
+        public var id: String { rawValue }
+
+        public var title: String {
+            switch self {
+            case .randomSpot: return "Shuffled spots"
+            case .decisionCalled: return "Called on the catch"
+            case .fatigued: return "Straight after running"
+            case .contested: return "With a hand up"
+            }
+        }
+
+        /// The grade of the evidence that **this condition is worth practising in**.
+        public var grade: ShotEvidenceGrade {
+            switch self {
+            case .randomSpot: return .b        // Shamshiri 2025, Shoenfelt 2002 — randomised, novices
+            case .decisionCalled: return .c    // constraints-led consensus; no mechanics outcome
+            case .fatigued: return .a          // Bourdas 2024, Li 2025 meta; Slawinski 2018 the exception
+            case .contested: return .c         // A for the measure, D for the closeout standing in for a defender
+            }
+        }
+
+        /// What the block cannot see. Shown with the block, never hidden behind a disclosure.
+        public var limit: String {
+            switch self {
+            case .randomSpot:
+                return "The app measures the same shot numbers as any other block, and it knows the order because it made it. It shuffles sets rather than single shots: one clip is saved at one spot, and shots from different spots are never mixed into one number."
+            case .decisionCalled:
+                return "The app cannot hear the call. If you type in what was called it will store your word for it; it never measures the decision."
+            case .fatigued:
+                return "The app cannot tell that you ran. It compares this block with your fresh ones and nothing more, so the running has to have actually happened."
+            case .contested:
+                return "The app cannot see your partner. A contested block and an open block look identical to it, so which was which is your word."
+            }
+        }
+
+        public var source: String {
+            switch self {
+            case .randomSpot:
+                return "Shamshiri et al. 2025 (84 novice females, randomised, 3 days): practising in one condition scored best during practice and worst on the test afterwards. Shoenfelt et al. 2002 (94 participants, 3 weeks): varied practice equalled constant on the delayed test. Grade B — novices, short studies."
+            case .decisionCalled:
+                return "Constraints-led coaching consensus; the nearest study is quasi-experimental with no shooting-mechanics outcome (grade C). Shamshiri et al. 2025 is the randomised evidence for shuffling, one step removed from deciding."
+            case .fatigued:
+                return "Bourdas et al. 2024: after 12 min of simulated game load in 38 high-level players, makes −14 to −19 %, entry angle −3.1 to −3.9 %. Li et al. 2025 meta, 14 studies, n = 388. Slawinski et al. 2018 found no change in elite U18s, which is why it is measured on you rather than assumed."
+            case .contested:
+                return "Daly-Grafstein & Bornn 2020 (>50 000 tracked NBA shots): tight contests biased shots short and raised depth spread 56 % and left-right spread 38 % without moving the technique. Amaro et al. 2025: no significant effect of a defender or 105 dBA noise on release in 18 national-level players. That a partner's closeout resembles a game defender is untested."
+            }
+        }
     }
 
     /// One proposed block: what to shoot, why, and what it buys.
@@ -73,9 +155,17 @@ public enum NextBlock {
         public var whatItBuys: String
         /// Whether the block carries the plan's cue. Baseline and retention blocks never do.
         public var cued: Bool
+        /// The game-like condition this block is shot under, when it is one. Nil for every ordinary
+        /// block, which is every block the table proposes as its main answer.
+        public var gameLike: GameLikeVariant?
+        /// For `randomSpot` only: the order the app generated, one entry per shot. Empty otherwise.
+        /// It is in the plan rather than left to the shooter because the app can only claim to know
+        /// the sequence if it is the thing that made it.
+        public var spotSequence: [DoctorSpot]
 
         public init(reasonKey: ReasonKey, role: Role, spot: DoctorSpot, shots: Int,
-                    instruction: String, reason: String, whatItBuys: String, cued: Bool) {
+                    instruction: String, reason: String, whatItBuys: String, cued: Bool,
+                    gameLike: GameLikeVariant? = nil, spotSequence: [DoctorSpot] = []) {
             self.reasonKey = reasonKey
             self.role = role
             self.spot = spot
@@ -84,6 +174,8 @@ public enum NextBlock {
             self.reason = reason
             self.whatItBuys = whatItBuys
             self.cued = cued
+            self.gameLike = gameLike
+            self.spotSequence = spotSequence
         }
     }
 
@@ -92,11 +184,16 @@ public enum NextBlock {
         public var plan: Plan
         /// Nil while the day is still open.
         public var dayDoneReason: String?
+        /// Game-like blocks offered **alongside** `plan`, never instead of it (added 2026-09-19).
+        /// Empty until a change has actually been measured: offering game-like practice before the
+        /// change exists would be asking a shooter to carry something they have not got yet.
+        public var alternatives: [Plan]
         public var isToday: Bool { dayDoneReason == nil }
 
-        public init(plan: Plan, dayDoneReason: String? = nil) {
+        public init(plan: Plan, dayDoneReason: String? = nil, alternatives: [Plan] = []) {
             self.plan = plan
             self.dayDoneReason = dayDoneReason
+            self.alternatives = alternatives
         }
     }
 
@@ -136,12 +233,18 @@ public enum NextBlock {
         public var checkTarget: Double?
         /// A block started from a Learn module is scored on that module's gate, not on the plan.
         public var fromLearnModule: Bool
+        /// Set when the block was shot under a game-like condition (added 2026-09-19). Such a block
+        /// is never scored against the plan's baseline — the baseline was not shot tired, shuffled
+        /// or with a hand in the shooter's face, so the check would report the condition as a
+        /// failure of the fix.
+        public var gameLike: GameLikeVariant?
 
         public init(role: Role, spot: DoctorSpot, countedShots: Int? = nil,
                     measureValue: Double? = nil, measureN: Int? = nil,
                     measureUnavailableReason: String? = nil, hasCheck: Bool = false,
                     checkPassed: Bool? = nil, checkBaselineValue: Double? = nil,
-                    checkTarget: Double? = nil, fromLearnModule: Bool = false) {
+                    checkTarget: Double? = nil, fromLearnModule: Bool = false,
+                    gameLike: GameLikeVariant? = nil) {
             self.role = role
             self.spot = spot
             self.countedShots = countedShots
@@ -153,6 +256,7 @@ public enum NextBlock {
             self.checkBaselineValue = checkBaselineValue
             self.checkTarget = checkTarget
             self.fromLearnModule = fromLearnModule
+            self.gameLike = gameLike
         }
     }
 
@@ -230,10 +334,12 @@ public enum NextBlock {
     public static func decide(_ s: State) -> Decision {
         let (plan, endsDay) = propose(s)
         if s.blocksDoneToday >= s.cap.blocks || s.shotsToday >= s.cap.shots {
+            // The cap is the cap: no alternatives are offered on top of a day that is over.
             return Decision(plan: plan, dayDoneReason: capReason(s))
         }
-        if let endsDay { return Decision(plan: plan, dayDoneReason: endsDay) }
-        return Decision(plan: plan)
+        let extras = gameLikeVariants(s)
+        if let endsDay { return Decision(plan: plan, dayDoneReason: endsDay, alternatives: extras) }
+        return Decision(plan: plan, alternatives: extras)
     }
 
     // swiftlint:disable:next cyclomatic_complexity
@@ -245,6 +351,11 @@ public enum NextBlock {
         if s.hasPlan, !s.hasBaseline { return (planNeedsNewBaseline(s, last), nil) }
 
         if last.fromLearnModule { return (afterLearnBlock(s, last), nil) }
+
+        // A block shot tired, shuffled or with a hand up is not a block the plan's check can read:
+        // the baseline it would be scored against was shot in none of those conditions. What it
+        // needs is its own comparison — the ordinary version of the same block, the same day.
+        if let variant = last.gameLike { return (afterGameLikeBlock(s, last, variant: variant), nil) }
 
         switch last.role {
         case .baseline:
@@ -337,6 +448,21 @@ public enum NextBlock {
                     reason: "That block came from a Learn drill and was scored on the module's own gate, not on \(s.measureName).",
                     whatItBuys: "A block at \(s.planSpot.rawValue) with the plan's cue is the one that can move \(s.measureName) (grade \(s.grade.letter)).",
                     cued: true)
+    }
+
+    /// After a game-like block: the ordinary version of it, un-cued, same spot, same day.
+    ///
+    /// Without that comparison the game-like block says nothing at all — a number from a tired block
+    /// is only interesting beside a number from a fresh one, and comparing it with a block shot last
+    /// week compares two days as much as two conditions.
+    private static func afterGameLikeBlock(_ s: State, _ last: LastBlock, variant: GameLikeVariant) -> Plan {
+        let value = last.measureValue.map { number($0, s) } ?? "no number"
+        let n = last.measureN ?? last.countedShots ?? 0
+        return Plan(reasonKey: .afterGameLikeBlock, role: .baseline, spot: last.spot, shots: 10,
+                    instruction: "Ten shots at \(last.spot.rawValue), ordinary: no cue, nobody in the way, no running first.",
+                    reason: "That block was shot \(variant.title.lowercased()), which your plan's reference block was not — so it is not scored against the plan. It came out at \(s.measureName) \(value) at n = \(n). \(variant.limit)",
+                    whatItBuys: "An ordinary block at the same spot on the same day is the only fair comparison for it. Compared with a block from another day, what you would be measuring is mostly the difference between two days.",
+                    cued: false)
     }
 
     private static func baselineNeedsShots(_ s: State, _ last: LastBlock) -> Plan {
@@ -469,6 +595,118 @@ public enum NextBlock {
                     reason: "With the cue gone \(s.measureName) went \(from) → \(to) at n = \(n): practised, not learned yet.",
                     whatItBuys: "More cued reps, then another un-cued block, is the only way to tell whether it starts to stick. Nothing here is a fail — it is where most changes sit for the first few sessions.",
                     cued: true)
+    }
+
+    // MARK: - The game-like rows (added 2026-09-19)
+
+    /// True once the plan's number has actually moved — either the drill block passed its check, or
+    /// an un-cued block showed the change was still there with the cue taken away.
+    ///
+    /// Nothing game-like is offered before that point on purpose. A shooter who has not yet changed
+    /// anything in an empty gym has nothing to carry into a harder condition, and offering it would
+    /// be asking them to practise a change that does not exist yet.
+    public static func qualifiesForGameLike(_ s: State) -> Bool {
+        guard s.hasPlan, s.hasBaseline, let last = s.last, !last.fromLearnModule else { return false }
+        guard last.checkPassed == true else { return false }
+        return last.role == .drill || last.role == .retention
+    }
+
+    /// The game-like blocks to offer **alongside** the day's next block, or empty.
+    ///
+    /// Two rows:
+    ///  * the drill block passed → shuffled spots and a called catch. Both are practice-schedule
+    ///    variants, and neither adds tiredness on the same day the change first appeared.
+    ///  * an un-cued block held → all four, because a change that survives the cue going is ready to
+    ///    be put against the conditions a game actually has.
+    public static func gameLikeVariants(_ s: State) -> [Plan] {
+        guard qualifiesForGameLike(s), let last = s.last else { return [] }
+        let held = last.role == .retention
+        let wanted: [GameLikeVariant] = held
+            ? [.randomSpot, .decisionCalled, .contested, .fatigued]
+            : [.randomSpot, .decisionCalled]
+        return wanted.map { variant(current: $0, s, last, held: held) }
+    }
+
+    private static func variant(current v: GameLikeVariant, _ s: State, _ last: LastBlock, held: Bool) -> Plan {
+        let reps = max(1, s.drillReps)
+        let earned = held
+            ? "With the cue taken away \(s.measureName) still passed at \(last.spot.rawValue), so the change is yours and not the cue's."
+            : "\(s.measureName) hit its target at \(last.spot.rawValue) today (grade \(s.grade.letter)), which is the point at which it is worth trying somewhere harder."
+        let transfer = "A change measured in an empty gym has only been shown to exist in an empty gym. In the one randomised trial of practice order for shooting, practising in a single easy condition scored best while they practised and worst on the test afterwards (grade \(GameLikeVariant.randomSpot.grade.letter))."
+
+        switch v {
+        case .randomSpot:
+            let spots = randomSpots(s)
+            // One short set at each spot, in an order the shooter did not pick. `spotSequence` is
+            // one entry per set, not per shot: see `GameLikeVariant.randomSpot`.
+            let sequence = randomSpotSequence(spots: spots, shots: spots.count,
+                                              seed: UInt64(max(0, s.blocksDoneToday)) &* 31 &+ UInt64(max(0, s.shotsToday)))
+            let perSet = max(5, reps / max(1, spots.count))
+            let first = sequence.first ?? spots[0]
+            return Plan(reasonKey: .gameLikeRandomSpot, role: .drill, spot: first, shots: perSet,
+                        instruction: "Shuffled spots: \(perSet) shots at each of these, in this order — \(sequence.map(\.rawValue).joined(separator: ", ")). \(perSet * sequence.count) in all, and the order changes every time.",
+                        reason: "\(earned) \(transfer)",
+                        whatItBuys: "Same numbers as any block, shot in an order you did not choose. \(GameLikeVariant.randomSpot.limit)",
+                        cued: false, gameLike: .randomSpot, spotSequence: sequence)
+        case .decisionCalled:
+            return Plan(reasonKey: .gameLikeDecisionCalled, role: .drill, spot: s.planSpot, shots: reps,
+                        instruction: "Called on the catch: \(reps) shots at \(s.planSpot.rawValue). A partner calls catch-and-shoot, one-dribble pull-up or drive as the ball leaves their hands, and you do what they called. Type in the calls afterwards if you want them kept.",
+                        reason: "\(earned) A game never tells you what the shot is before the ball arrives, and this is the cheapest way to put that back (grade \(GameLikeVariant.decisionCalled.grade.letter)).",
+                        whatItBuys: "The same shot numbers, taken out of a decision instead of out of a routine. \(GameLikeVariant.decisionCalled.limit)",
+                        cued: false, gameLike: .decisionCalled)
+        case .fatigued:
+            return Plan(reasonKey: .gameLikeFatigued, role: .drill, spot: s.planSpot, shots: reps,
+                        instruction: "Straight after running: run hard for 60 to 90 seconds, then shoot \(reps) at \(s.planSpot.rawValue) inside ten seconds of stopping.",
+                        reason: "\(earned) Twelve minutes of game-like load cost 38 high-level players 14–19 % of their makes and 3–4 % of their falling angle — and cost elite juniors nothing at all, so this block is how you find out which you are (grade \(GameLikeVariant.fatigued.grade.letter)).",
+                        whatItBuys: "Your fresh blocks today are the comparison, so one tired block tells you whether tiredness moves your shot at all. \(GameLikeVariant.fatigued.limit)",
+                        cued: false, gameLike: .fatigued)
+        case .contested:
+            return Plan(reasonKey: .gameLikeContested, role: .drill, spot: s.planSpot, shots: reps,
+                        instruction: "With a hand up: \(reps) shots at \(s.planSpot.rawValue), a partner closing out with a hand in front of the ball. Shoot your normal shot.",
+                        reason: "\(earned) In NBA tracking a tight contest left the technique alone and scattered the shots about half again as much, so what this block tests is whether your spread survives, not whether your form does (grade \(GameLikeVariant.contested.grade.letter)).",
+                        whatItBuys: "A read on your spread with somebody in the way, against your open blocks at the same spot. \(GameLikeVariant.contested.limit)",
+                        cued: false, gameLike: .contested)
+        }
+    }
+
+    /// The spots a shuffled block uses: the drill's own ladder when it has two or more, otherwise
+    /// the plan's spot with its neighbours — the spots the shooter already has numbers at.
+    static func randomSpots(_ s: State) -> [DoctorSpot] {
+        let ladder = s.drillLadder.filter { distanceLadder.contains($0) }
+        if ladder.count >= 2 { return ladder }
+        guard let i = distanceLadder.firstIndex(of: s.planSpot) else { return Array(distanceLadder.prefix(3)) }
+        let lo = max(0, i - 1)
+        let hi = min(distanceLadder.count - 1, i + 1)
+        return Array(distanceLadder[lo...hi])
+    }
+
+    /// A shuffled order the app can claim to know, because it made it.
+    ///
+    /// Deterministic from `seed` — the same day's state gives the same order, so a relaunch does not
+    /// quietly reshuffle a block that is half shot. Each pass through the spots is its own shuffle,
+    /// and a spot never lands twice in a row across the join, because two shots from the same place
+    /// is the thing the block exists not to be.
+    public static func randomSpotSequence(spots: [DoctorSpot], shots: Int, seed: UInt64) -> [DoctorSpot] {
+        guard !spots.isEmpty, shots > 0 else { return [] }
+        guard spots.count > 1 else { return Array(repeating: spots[0], count: shots) }
+        var state = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        func next() -> UInt64 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return state >> 33
+        }
+        var out: [DoctorSpot] = []
+        while out.count < shots {
+            var cycle = spots
+            var i = cycle.count - 1
+            while i > 0 {
+                let j = Int(next() % UInt64(i + 1))
+                cycle.swapAt(i, j)
+                i -= 1
+            }
+            if let previous = out.last, cycle[0] == previous { cycle.swapAt(0, 1) }
+            for spot in cycle where out.count < shots { out.append(spot) }
+        }
+        return out
     }
 
     // MARK: - The cap

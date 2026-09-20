@@ -5,8 +5,10 @@ import SwiftUI
 /// (`docs/research/shooting-curriculum-2026-09-15.md`, `ShotGeometry/Curriculum.swift`).
 ///
 /// The shot doctor answers "your numbers say X, so do Y". This screen answers the other question:
-/// "teach me to shoot." Eight modules, each with what the coach watches, one cue, the drills, what
+/// "teach me to shoot." Ten modules, each with what the coach watches, one cue, the drills, what
 /// *done* looks like in ArcLab's own numbers, and the faults with the fingerprint each one leaves.
+/// The last two (ball handling, handling under pressure) were added on 2026-09-19 and are the ones
+/// the app can measure least of — which their own copy says first.
 ///
 /// Two honesty rules the screen is built around:
 ///  * **Progress is read out of what was shot**, never out of a tick the shooter puts in a box. A
@@ -23,6 +25,7 @@ struct LearnView: View {
         List {
             introSection
             modulesSection
+            gameSection
             honestySection
         }
         .navigationTitle("Learn")
@@ -63,7 +66,7 @@ struct LearnView: View {
 
     private var introSection: some View {
         Section {
-            Text("Eight modules, in the order a shooting coach works through them. Read one, run its drill as a practice block, and the block is scored on that module's own gate — not on whatever plan happens to be active.")
+            Text("\(Curriculum.modules.count) modules, in the order a shooting coach works through them. Read one, run its drill as a practice block, and the block is scored on that module's own gate — not on whatever plan happens to be active.")
                 .font(.subheadline)
             Text("The order itself is coaching consensus, not a proven sequence: no study has compared teaching orders for shooting. What is graded module by module is the measure, never the wording of the cue.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -122,6 +125,34 @@ struct LearnView: View {
             parts.append("no gate ArcLab can measure yet")
         }
         return parts.joined(separator: " · ")
+    }
+
+    // MARK: Taking it to a game (added 2026-09-19)
+
+    /// The two modules at the end of the order teach ball handling and shooting under pressure, and
+    /// neither is finished on a court by itself: one needs the same shot taken under a game's
+    /// conditions, the other needs a record of what actually happened in a game. Both are a tap away
+    /// from here rather than buried under a plan that may not exist yet.
+    private var gameSection: some View {
+        Section {
+            NavigationLink {
+                GameLikeBlocksView(practice: practice, doctor: doctor, store: store)
+            } label: {
+                Label("Game-like blocks", systemImage: "figure.basketball")
+            }
+            NavigationLink {
+                GameLogView(store: store)
+            } label: {
+                Label("Games you have played", systemImage: "list.clipboard")
+            }
+            Text("A change measured in an empty gym has only been shown to exist in an empty gym. These two are how the app finds out whether yours goes any further.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } header: {
+            Text("Practice against games")
+        } footer: {
+            Text("The app measures the same shot numbers in a game-like block as in any other. It cannot see the defender, the clock or the call, and every block says so on its own card.")
+        }
     }
 
     private var honestySection: some View {

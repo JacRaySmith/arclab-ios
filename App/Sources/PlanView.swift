@@ -23,6 +23,7 @@ struct PlanView: View {
             measureSection
             checkSection
             progressSection
+            transferSection
             actionSection
             honestySection
         }
@@ -199,6 +200,55 @@ struct PlanView: View {
                 } footer: {
                     Text("The score of a fix is what survives to the session after, not what happened at the end of the one you drilled it in.")
                 }
+            }
+        }
+    }
+
+    // MARK: Does it carry into a game (added 2026-09-19)
+
+    /// Shown only once the plan's measure has actually moved in practice.
+    ///
+    /// The sentence it says is the honest one and it is not comfortable: a change measured in an
+    /// empty gym has been shown to exist in an empty gym, and the practice-order literature is
+    /// specifically about that gap (`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.2,
+    /// §2.1). Nothing here claims the change will or will not carry — it points at the two ways the
+    /// app can find out, which is all it honestly has.
+    @ViewBuilder private var transferSection: some View {
+        if isActive, let p = progress, p.check?.passed == true {
+            Section {
+                Text("Your number moved in practice. Practice gains carry into games only when you have also practised under something like game conditions — and the app cannot tell you that yours have.")
+                    .font(.subheadline)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("How well that is known").font(.caption.bold())
+                        Spacer()
+                        DoctorGradeBadge(grade: .b)
+                    }
+                    Text("In the one randomised trial of practice order for shooting, practising in a single easy condition scored best while they were practising and worst on the test afterwards. Separately, one college team shot significantly better at the line in practice than in games across two seasons. Both are grade B — small or single-team samples — and neither says how big the gap is for you.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Shamshiri et al. 2025 (84 novice females, randomised, 3 days); Shoenfelt et al. 2002 (94 participants, 3 weeks); Kozar, Vaughn, Lord & Whitfield 1995, Journal of Sport Behavior 18(2):123–129 — direction only, the size is unverified.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                NavigationLink {
+                    GameLikeBlocksView(practice: nil, doctor: doctor, store: doctor.store)
+                } label: {
+                    Label("Shoot it under game conditions", systemImage: "figure.basketball")
+                        .font(.subheadline)
+                }
+                NavigationLink {
+                    GameLogView(store: doctor.store)
+                } label: {
+                    Label("Log what happens in games", systemImage: "list.clipboard")
+                        .font(.subheadline)
+                }
+            } header: {
+                Text("Does this carry into a game")
+            } footer: {
+                Text("The app cannot see a game. The only comparison it can make is between what it measured in practice and what you type in after one, and it needs 20 shots on each side before those two make rates can be told apart at all.")
             }
         }
     }
