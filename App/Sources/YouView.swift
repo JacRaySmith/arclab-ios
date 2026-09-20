@@ -20,6 +20,7 @@ struct YouView: View {
         List {
             profileSection
             gamesSection
+            jumpSection
             cameraSection
             privacySection
             advancedSection
@@ -80,6 +81,18 @@ struct YouView: View {
             Text("Practice against games")
         } footer: {
             Text("This is the only place in ArcLab where a number comes from your memory rather than from the camera, and it is kept separate from the measured ones everywhere it appears.")
+        }
+    }
+
+    // MARK: Your body
+
+    /// The jump test is a measurement (flight time from the 240 fps clip), so it sits with the
+    /// measured things and not in the Games section.
+    private var jumpSection: some View {
+        Section {
+            JumpTestEntryCard()
+        } header: {
+            Text("Your body")
         }
     }
 
