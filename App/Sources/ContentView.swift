@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The app shell: four tabs, four navigation stacks, one set of models.
+/// The app shell: five tabs, five navigation stacks, one set of models.
 ///
 /// `docs/IMPROVEMENTS-2026-09-16.md` §1.1 item 3. Until now everything lived in one
 /// `NavigationStack` behind a home screen that was a grouped `List` of six `Start` rows — which made
@@ -18,9 +18,10 @@ struct ContentView: View {
     @State private var store: SessionStore
     @State private var doctor: ShotDoctorModel
     @State private var practice = PracticeStore()
+    @State private var iq = IQStore()
     @State private var tab: AppTab = .shoot
 
-    enum AppTab: Hashable { case shoot, review, learn, you }
+    enum AppTab: Hashable { case shoot, review, learn, iq, you }
 
     init() {
         let store = SessionStore()
@@ -39,6 +40,7 @@ struct ContentView: View {
         case "shoot": return .shoot
         case "review": return .review
         case "learn": return .learn
+        case "iq": return .iq
         case "you": return .you
         default: return nil
         }
@@ -59,6 +61,11 @@ struct ContentView: View {
             Tab("Learn", systemImage: "graduationcap.fill", value: AppTab.learn) {
                 NavigationStack {
                     LearnHubView(practice: practice, doctor: doctor, store: store)
+                }
+            }
+            Tab("IQ", systemImage: "brain.head.profile", value: AppTab.iq) {
+                NavigationStack {
+                    IQHomeView(store: iq)
                 }
             }
             Tab("You", systemImage: "person.crop.circle", value: AppTab.you) {
