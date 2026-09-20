@@ -40,6 +40,15 @@ private struct FormSceneContainer: UIViewRepresentable {
     var tappable: [Int]
     /// The joint index under the tap, or nil when the tap missed every drawn joint.
     var onTap: (Int?) -> Void
+    /// True while the clock is moving the skeleton — playback, or a finger on the scrubber.
+    ///
+    /// Same fix as `BodySceneContainer.isAnimating` in `BodyPlayerView.swift`, for the same reason:
+    /// with `rendersContinuously = false` an `SCNView` presents a new drawable only when SceneKit's
+    /// own change tracking decides the scene moved, and `UIView.setNeedsDisplay()` does not drive a
+    /// Metal-backed SceneKit renderer. Moving the skeleton from a `Timer` on the main run loop then
+    /// leaves the view on its clear colour — the dark ground read as black — until something else
+    /// forces a render, which is what "it comes back at the end" was.
+    var isAnimating: Bool
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -49,7 +58,8 @@ private struct FormSceneContainer: UIViewRepresentable {
         view.autoenablesDefaultLighting = false
         view.antialiasingMode = .multisampling2X
         view.backgroundColor = FormSceneModel.background
-        view.rendersContinuously = false
+        view.isOpaque = true
+        view.rendersContinuously = isAnimating
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.numberOfTapsRequired = 1
         view.addGestureRecognizer(tap)
@@ -65,6 +75,7 @@ private struct FormSceneContainer: UIViewRepresentable {
             view.pointOfView = scene.cameraNode
             aim(view)
         }
+        if view.rendersContinuously != isAnimating { view.rendersContinuously = isAnimating }
         view.setNeedsDisplay()
     }
 
@@ -132,6 +143,8 @@ struct FormModelView: View {
     @State private var stops: [FormClockStop] = []
     /// The stop the viewer asked for that this clock does not carry, so the screen can say why.
     @State private var refusedStop: String?
+    /// True while a finger is on the scrubber — see `FormSceneContainer.isAnimating`.
+    @State private var scrubbing = false
 
     private let tick = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
@@ -178,6 +191,9 @@ struct FormModelView: View {
         }
         .task { await loadGhost() }
         .onReceive(tick) { _ in advance() }
+        // Without this a screen left while it is playing keeps a 60 Hz timer redrawing a scene
+        // nobody is looking at, for as long as the app runs.
+        .onDisappear { playing = false; scrubbing = false }
     }
 
     @ViewBuilder private var content: some View {
@@ -186,7 +202,8 @@ struct FormModelView: View {
                 FormSceneContainer(scene: scene, presetToken: presetToken,
                                    tapLayer: { scene.shotLayer ?? scene.ghostLayer },
                                    tappable: FormTappableJoint.indices(in: activeJoints),
-                                   onTap: tapped)
+                                   onTap: tapped,
+                                   isAnimating: playing || scrubbing)
                     .frame(height: 400)
                     .background(FormSceneChrome.sceneBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -395,8 +412,11 @@ struct FormModelView: View {
                 }
                 Spacer()
             }
-            Slider(value: $tau, in: 0...1) { editing in if editing { playing = false } }
-                .onChange(of: tau) { _, _ in redraw() }
+            Slider(value: $tau, in: 0...1) { editing in
+                scrubbing = editing
+                if editing { playing = false }
+            }
+            .onChange(of: tau) { _, _ in redraw() }
         }
     }
 

@@ -10,6 +10,7 @@ struct HistoryView: View {
     @Bindable var store: SessionStore
     @Bindable var doctor: ShotDoctorModel
     @State private var spot: ShotSpot = .freeThrow
+    @State private var pendingDelete: SavedSession?
 
     var body: some View {
         List {
@@ -20,6 +21,7 @@ struct HistoryView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } else {
+                sessionsLink
                 spotPicker
                 doctorSection
                 progressSection
@@ -31,11 +33,33 @@ struct HistoryView: View {
         .onAppear { ActivityLog.shared.event("screen", ["name": "progress", "sessions": store.sessions.count]) }
         .navigationTitle("Progress")
         .navigationBarTitleDisplayMode(.inline)
+        .deleteSessionConfirmation(store: store, session: $pendingDelete, onDeleted: nil)
         .onAppear {
             // Open on the spot with the most saved shots, so the first screen is the useful one.
             if let best = ShotSpot.allCases.max(by: { store.sessions(at: $0).count < store.sessions(at: $1).count }),
                !store.sessions(at: best).isEmpty {
                 spot = best
+            }
+        }
+    }
+
+    /// The report was "I should be able to delete and view specific sessions". The list of sessions
+    /// used to sit at the bottom of this screen behind a spot picker, so this is the way in: every
+    /// session, newest first, no filter, above everything the screen pools.
+    private var sessionsLink: some View {
+        Section {
+            NavigationLink {
+                SessionsListView(store: store)
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sessions")
+                        Text("\(store.sessions.count) saved · open one to see its own numbers, or delete it")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "list.bullet.rectangle")
+                }
             }
         }
     }
@@ -189,7 +213,7 @@ struct HistoryView: View {
         let list = store.sessions(at: spot).sorted { $0.date > $1.date }
         return Section {
             ForEach(list) { s in
-                NavigationLink { EditSessionView(store: store, sessionID: s.id) } label: {
+                NavigationLink { SavedSessionView(store: store, sessionID: s.id) } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text(s.date, format: .dateTime.day().month().year().hour().minute()).font(.subheadline.bold())
@@ -198,7 +222,8 @@ struct HistoryView: View {
                     }
                     Text(s.clipName).font(.caption2).foregroundStyle(.secondary)
                     if !s.note.isEmpty { Text(s.note).font(.caption) }
-                    Text("Tap to edit the spot or note, or delete it.").font(.caption2).foregroundStyle(.tertiary)
+                    Text("Tap to open this session — its rim map, its shot strip, every shot, and the way to delete it.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
                 }
                 .contextMenu {
@@ -211,12 +236,12 @@ struct HistoryView: View {
                 }
             }
             .onDelete { offsets in
-                for i in offsets { store.delete(list[i].id) }
+                if let i = offsets.first, list.indices.contains(i) { pendingDelete = list[i] }
             }
         } header: {
             Text("Saved sessions at this spot")
         } footer: {
-            Text("Swipe to delete. Sessions are stored only on this device, in the app's own folder.")
+            Text("Tap a session to open it; swipe to delete it. Either way you are shown what else the delete affects first. Sessions are stored only on this device, in the app's own folder.")
         }
     }
 

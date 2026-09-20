@@ -378,8 +378,46 @@ final class SessionStore {
         return saved
     }
 
-    func delete(_ id: UUID) {
-        ActivityLog.shared.event("session.deleted", ["id": id.uuidString])
+    /// Delete one saved session, and — when an `impact` is handed in — the files it owns.
+    ///
+    /// `impact` is the thing the shooter was shown and agreed to (`SessionDeletionImpact`). Without
+    /// one the numbers go and every file stays, and the log says so: a delete never removes a
+    /// recording or a 3-D export that nobody was told about.
+    func delete(_ id: UUID, impact: SessionDeletionImpact? = nil) {
+        let session = sessions.first { $0.id == id }
+        var recordingDeleted = false
+        var bodyFilesDeleted = 0
+        if let impact {
+            if impact.canDeleteRecording, let clip = impact.recording {
+                clip.delete()
+                recordingDeleted = !clip.fileExists
+            }
+            if impact.canDeleteBodyFiles {
+                for dir in impact.bodyDirectories {
+                    let json = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                        .filter { $0.pathExtension == "json" }
+                    guard (try? FileManager.default.removeItem(at: dir)) != nil else { continue }
+                    bodyFilesDeleted += json.count
+                }
+            }
+        }
+        ActivityLog.shared.event("session.deleted", [
+            "id": id.uuidString,
+            "spot": session?.spot.rawValue,
+            "shots": session?.shots.count,
+            "accepted": session?.accepted,
+            "formClip": session?.isFormClip,
+            "clip": session?.clipName,
+            "hadRecording": impact?.recording != nil,
+            "recordingDeleted": recordingDeleted,
+            "recordingKeptReason": impact?.recordingKeptReason,
+            "bodyFiles": impact?.bodyFileCount ?? 0,
+            "bodyFilesDeleted": bodyFilesDeleted,
+            "bodyKeptReason": impact?.bodyKeptReason,
+            "practiceBlocksAffected": impact?.practiceBlocks.count ?? 0,
+            "wasPlanBaseline": impact?.planBaselineNote != nil,
+            "confirmedWithImpact": impact != nil,
+        ])
         sessions.removeAll { $0.id == id }
         persist()
     }

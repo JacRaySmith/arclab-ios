@@ -8,7 +8,7 @@ struct EditSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var spot: ShotSpot = .freeThrow
     @State private var note = ""
-    @State private var confirmDelete = false
+    @State private var pendingDelete: SavedSession?
 
     private var session: SavedSession? { store.sessions.first { $0.id == sessionID } }
 
@@ -41,10 +41,9 @@ struct EditSessionView: View {
                     Text("Moving a session to another spot moves every one of its shots with it; nothing is re-measured. A duplicate save of the same clip should be deleted, not moved.")
                 }
                 Section {
-                    Button("Delete this session", role: .destructive) { confirmDelete = true }
-                        .confirmationDialog("Delete this session and its \(s.shots.count) shots?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                            Button("Delete", role: .destructive) { store.delete(s.id); dismiss() }
-                        }
+                    Button("Delete this session", role: .destructive) { pendingDelete = s }
+                } footer: {
+                    Text("You are shown what else the delete affects — practice blocks, the plan being scored, the recording and the 3-D body files — before it happens.")
                 }
             } else {
                 Text("This session no longer exists.").foregroundStyle(.secondary)
@@ -52,6 +51,7 @@ struct EditSessionView: View {
         }
         .navigationTitle("Edit session")
         .navigationBarTitleDisplayMode(.inline)
+        .deleteSessionConfirmation(store: store, session: $pendingDelete, onDeleted: { dismiss() })
         .onAppear {
             if let s = session { spot = s.spot; note = s.note }
             ActivityLog.shared.event("screen", ["name": "session.edit"])

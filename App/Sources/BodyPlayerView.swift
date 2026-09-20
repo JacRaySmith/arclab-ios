@@ -144,6 +144,42 @@ struct BodyShotLibraryView: View {
     }
 }
 
+// MARK: - Per-frame timings
+
+/// How long one frame of playback takes to push into the scene, summarised every `every` frames.
+///
+/// A class held in `@State`: counting a frame must not invalidate the view, or the measurement
+/// would be measuring itself. Reported through `body.player.frame` so the only machine that can
+/// answer "is the phone keeping up?" — the phone — puts the number in the log.
+@MainActor
+final class BodyPlayerFrameStats {
+    struct Report: Sendable {
+        var count: Int
+        var meanMillis: Double
+        var worstMillis: Double
+    }
+
+    private let every: Int
+    private var count = 0
+    private var totalMillis = 0.0
+    private var worstMillis = 0.0
+
+    init(every: Int = 30) { self.every = max(1, every) }
+
+    /// Record one applied frame. Returns a report on every `every`-th call, nil otherwise.
+    func note(millis: Double) -> Report? {
+        count += 1
+        totalMillis += millis
+        worstMillis = max(worstMillis, millis)
+        guard count % every == 0 else { return nil }
+        let report = Report(count: count,
+                            meanMillis: (totalMillis / Double(count) * 100).rounded() / 100,
+                            worstMillis: (worstMillis * 100).rounded() / 100)
+        worstMillis = 0
+        return report
+    }
+}
+
 // MARK: - The SceneKit surface
 
 /// `SCNView` rather than `SceneView`, so the camera presets can move the point of view *and* leave
@@ -152,6 +188,23 @@ private struct BodySceneContainer: UIViewRepresentable {
     let scene: SceneBodyScene
     /// Bumped whenever a preset is chosen, so `updateUIView` knows to re-aim.
     var presetToken: Int
+    /// True while the transport is moving the body frame by frame.
+    ///
+    /// This is the fix for the 1.3.1 report "the image turns black and is only seen again at the
+    /// end". `SCNView` with `rendersContinuously = false` only presents a new drawable when
+    /// SceneKit's own change tracking decides the scene moved (SCNView.h: "the view will only
+    /// redraw when something change or animates in the receiver's scene"). The playback here moves
+    /// ~35 node transforms from a `Timer` on the main run loop — outside SceneKit's animation
+    /// machinery and outside any `SCNTransaction` — and then asks for a redraw with
+    /// `UIView.setNeedsDisplay()`, which does not drive a Metal-backed SceneKit renderer at all.
+    /// While that is happening no drawable is presented and the view shows its clear colour: the
+    /// dark ground the shooter reads as black. It comes back at the end because stopping produces
+    /// an ordinary layout/state change that does force one render.
+    ///
+    /// `rendersContinuously` is what the property is for, so it is turned on exactly while the
+    /// body is being animated and off again when it is parked (a still 3-D scene should not hold
+    /// the GPU at 60 fps on a phone).
+    var isAnimating: Bool
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -161,7 +214,8 @@ private struct BodySceneContainer: UIViewRepresentable {
         view.autoenablesDefaultLighting = false
         view.antialiasingMode = .multisampling2X
         view.backgroundColor = FormSceneModel.background
-        view.rendersContinuously = false
+        view.isOpaque = true
+        view.rendersContinuously = isAnimating
         aim(view)
         return view
     }
@@ -172,6 +226,7 @@ private struct BodySceneContainer: UIViewRepresentable {
             view.pointOfView = scene.cameraNode
             aim(view)
         }
+        if view.rendersContinuously != isAnimating { view.rendersContinuously = isAnimating }
         view.setNeedsDisplay()
     }
 
@@ -213,6 +268,15 @@ struct BodyPlayerView: View {
     @State private var stops: [FormClockStop] = []
     /// The stop the viewer asked for that this file never timed, so the screen can say why.
     @State private var refusedStop: String?
+    /// True while a finger is on the scrubber. A drag moves the body exactly as fast as playback
+    /// does, so the renderer has to be driven the same way (see `BodySceneContainer.isAnimating`).
+    @State private var scrubbing = false
+    /// How many of this frame's joints the file actually carries. Zero means there is nothing to
+    /// draw on this frame, and the screen says so rather than leaving an empty scene unexplained.
+    @State private var drawnJoints = 0
+    /// Per-frame timings for `body.player.frame`. A class, so counting a frame does not invalidate
+    /// the view thirty times a second.
+    @State private var frameStats = BodyPlayerFrameStats()
 
     private let tick = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
@@ -231,7 +295,7 @@ struct BodyPlayerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .onReceive(tick) { _ in advance() }
-        .onDisappear { playing = false }
+        .onDisappear { playing = false; scrubbing = false }
     }
 
     // MARK: Loading
@@ -267,6 +331,7 @@ struct BodyPlayerView: View {
         clock = play.times[min(index, play.times.count - 1)] - play.first
         stops = FormPhaseStops.real(shot: record, playback: play)
         built.body.update(frame: record.frames[index])
+        drawnJoints = record.frames[index].fitted3D.count
         ActivityLog.shared.event("screen", ["name": "bodyPlayer", "source": source,
                                             "frames": record.frames.count,
                                             "unit": record.skeleton.unit,
@@ -296,11 +361,25 @@ struct BodyPlayerView: View {
     }
 
     /// The only per-frame work: the body's transforms, and the mean form's when it is on.
+    ///
+    /// Timed, because the phone is the only place this can be measured: `body.player.frame` carries
+    /// how long one frame takes to apply, so a stall on the real device is a number in the log
+    /// rather than a description of a black picture.
     private func apply(frame: BodyShotFrame, scene: SceneBodyScene, playback: BodyShotPlayback) {
+        let t0 = CFAbsoluteTimeGetCurrent()
         scene.body.update(frame: frame)
         if showMean, let layer = meanLayer, let model = meanForm, let tau = normalisedTime(at: frame.t_real) {
             let (positions, _) = FormSampling.positions(of: model, at: tau)
             layer.update(positions: positions, spreads: nil)
+        }
+        let drawn = frame.fitted3D.count
+        if drawn != drawnJoints { drawnJoints = drawn }
+        if let report = frameStats.note(millis: 1000 * (CFAbsoluteTimeGetCurrent() - t0)) {
+            ActivityLog.shared.event("body.player.frame", [
+                "index": index, "frames": playback.count, "joints": drawn,
+                "meanMs": report.meanMillis, "worstMs": report.worstMillis, "n": report.count,
+                "playing": playing, "scrubbing": scrubbing, "speed": speed,
+            ])
         }
     }
 
@@ -309,12 +388,14 @@ struct BodyPlayerView: View {
     @ViewBuilder private func content(_ shot: BodyShot, _ playback: BodyShotPlayback, _ scene: SceneBodyScene) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                BodySceneContainer(scene: scene, presetToken: presetToken)
+                BodySceneContainer(scene: scene, presetToken: presetToken,
+                                   isAnimating: playing || scrubbing)
                     .frame(height: 400)
                     .background(FormSceneChrome.sceneBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .topLeading) { legend(shot).padding(8) }
                     .overlay(alignment: .bottomTrailing) { frameStamp(playback).padding(8) }
+                    .overlay(alignment: .center) { emptyFrameNote }
                     .accessibilityLabel("A rotatable 3-D body playing back this shot")
                 cameraRow(scene)
                 phaseRow(playback)
@@ -357,6 +438,17 @@ struct BodyPlayerView: View {
         HStack(spacing: 5) {
             Circle().fill(colour).frame(width: 8, height: 8)
             Text(text).foregroundStyle(FormSceneChrome.text)
+        }
+    }
+
+    /// An empty scene, explained. The rig hides every joint the file has no fitted position for, so
+    /// a frame the pose pass lost is a picture of nothing; naming it beats a blank rectangle.
+    @ViewBuilder private var emptyFrameNote: some View {
+        if drawnJoints == 0 {
+            Text("no fitted joints on this frame — there is nothing to draw here")
+                .font(.caption2)
+                .foregroundStyle(FormSceneChrome.secondaryText)
+                .formSceneScrim(corner: 8)
         }
     }
 
@@ -453,7 +545,8 @@ struct BodyPlayerView: View {
             .frame(height: 24)
             Slider(value: Binding(get: { Double(index) },
                                   set: { seek(to: Int($0.rounded())) }),
-                   in: 0...Double(max(1, shot.frames.count - 1)), step: 1)
+                   in: 0...Double(max(1, shot.frames.count - 1)), step: 1,
+                   onEditingChanged: { scrubbing = $0 })
             HStack {
                 Text(String(format: "%+.2f s", playback.secondsFromRelease(playback.first)))
                 Spacer()
