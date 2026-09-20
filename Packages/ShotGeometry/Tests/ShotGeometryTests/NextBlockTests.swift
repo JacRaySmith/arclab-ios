@@ -299,6 +299,183 @@ final class NextBlockTests: XCTestCase {
         }
     }
 
+    // MARK: Game-like variants (added 2026-09-19)
+
+    /// Nothing game-like is offered before anything has moved: a shooter with no measured change has
+    /// nothing to carry into a harder condition.
+    func testNoGameLikeBlocksBeforeAnythingHasMoved() {
+        let flat = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 26,
+                                       measureValue: 0.185, measureN: 26, hasCheck: true,
+                                       checkPassed: false, checkBaselineValue: 0.186, checkTarget: 0.126)
+        XCTAssertTrue(NextBlock.decide(state(last: flat)).alternatives.isEmpty)
+
+        let cannotTell = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 8,
+                                             measureValue: 0.13, measureN: 8, hasCheck: true, checkPassed: nil)
+        XCTAssertTrue(NextBlock.decide(state(last: cannotTell)).alternatives.isEmpty)
+
+        let noPlan = NextBlock.LastBlock(role: .baseline, spot: .freeThrow, countedShots: 10,
+                                         measureValue: 0.186, measureN: 10)
+        XCTAssertTrue(NextBlock.decide(state(last: noPlan, hasPlan: false, hasBaseline: false)).alternatives.isEmpty)
+    }
+
+    /// A drill block that passed gets the two practice-schedule variants and **not** tiredness: the
+    /// change appeared today, so nothing is stacked on top of it on the same day.
+    func testPassedDrillOffersShuffledSpotsAndACalledCatchButNotTiredness() {
+        let last = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 26,
+                                       measureValue: 0.118, measureN: 26, hasCheck: true,
+                                       checkPassed: true, checkBaselineValue: 0.186, checkTarget: 0.126)
+        let d = NextBlock.decide(state(last: last))
+        XCTAssertEqual(d.alternatives.map(\.gameLike), [.randomSpot, .decisionCalled])
+        for plan in d.alternatives {
+            XCTAssertFalse(plan.cued, "a game-like block tests the change without the cue")
+            XCTAssertGreaterThan(plan.shots, 0)
+            XCTAssertFalse(plan.instruction.isEmpty)
+            XCTAssertFalse(plan.whatItBuys.isEmpty)
+            XCTAssertTrue(plan.whatItBuys.contains("app"), plan.whatItBuys)
+        }
+    }
+
+    /// The main proposal is untouched by the alternatives — the table's existing rows still decide
+    /// what comes next, and the game-like blocks sit beside it.
+    func testGameLikeBlocksAreOfferedAlongsideTheLadderNotInsteadOfIt() {
+        let last = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 26,
+                                       measureValue: 0.118, measureN: 26, hasCheck: true,
+                                       checkPassed: true, checkBaselineValue: 0.186, checkTarget: 0.126)
+        let d = NextBlock.decide(state(last: last, ladder: [.freeThrow, .elbow], spotsDoneToday: [.freeThrow]))
+        XCTAssertEqual(d.plan.reasonKey, .ladderNextSpot)
+        XCTAssertEqual(d.plan.spot, .elbow)
+        XCTAssertNil(d.plan.gameLike, "the day's own block is never a game-like one")
+        XCTAssertFalse(d.alternatives.isEmpty)
+    }
+
+    /// Once an un-cued block has held, all four conditions are on offer.
+    func testRetentionThatHeldOffersAllFourGameLikeConditions() {
+        let last = NextBlock.LastBlock(role: .retention, spot: .freeThrow, countedShots: 10,
+                                       measureValue: 0.119, measureN: 10, hasCheck: true, checkPassed: true)
+        let d = NextBlock.decide(state(last: last, blocksDoneToday: 3, shotsToday: 40))
+        XCTAssertEqual(d.plan.reasonKey, .retentionHeld)          // the existing row is unchanged
+        XCTAssertEqual(d.alternatives.map(\.gameLike), [.randomSpot, .decisionCalled, .contested, .fatigued])
+        XCTAssertEqual(Set(d.alternatives.map(\.reasonKey)),
+                       [.gameLikeRandomSpot, .gameLikeDecisionCalled, .gameLikeContested, .gameLikeFatigued])
+        for plan in d.alternatives {
+            XCTAssertTrue(plan.reason.contains("cue taken away"), plan.reason)
+        }
+    }
+
+    /// Every variant states what the app cannot see, in the block itself rather than in a footnote.
+    func testEveryVariantSaysWhatTheAppCannotSee() {
+        for v in NextBlock.GameLikeVariant.allCases {
+            XCTAssertFalse(v.title.isEmpty)
+            XCTAssertFalse(v.limit.isEmpty)
+            XCTAssertFalse(v.source.isEmpty)
+            XCTAssertTrue(v.limit.contains("app"), "\(v.rawValue): the limit must be about what the app does — \(v.limit)")
+        }
+        XCTAssertEqual(NextBlock.GameLikeVariant.fatigued.grade, .a)
+        XCTAssertEqual(NextBlock.GameLikeVariant.randomSpot.grade, .b)
+    }
+
+    /// The day cap still governs: a capped day offers no extra blocks at all.
+    func testTheCapSilencesTheGameLikeOffers() {
+        let last = NextBlock.LastBlock(role: .retention, spot: .freeThrow, countedShots: 10,
+                                       measureValue: 0.119, measureN: 10, hasCheck: true, checkPassed: true)
+        let d = NextBlock.decide(state(last: last, blocksDoneToday: 8, shotsToday: 95))
+        XCTAssertFalse(d.isToday)
+        XCTAssertTrue(d.alternatives.isEmpty, "the day is over; nothing extra is offered on top of it")
+    }
+
+    /// A Learn block is scored on its module's gate, so it never earns a game-like offer from a plan.
+    func testALearnBlockNeverEarnsAGameLikeOffer() {
+        let last = NextBlock.LastBlock(role: .drill, spot: .elbow, countedShots: 12,
+                                       measureValue: 44.2, measureN: 12, hasCheck: true,
+                                       checkPassed: true, fromLearnModule: true)
+        XCTAssertTrue(NextBlock.decide(state(last: last)).alternatives.isEmpty)
+    }
+
+    /// A block shot under a game-like condition is never scored against the plan's baseline — that
+    /// baseline was not shot tired or contested, so the check would report the condition as a
+    /// failure of the fix. What comes next is the ordinary version of the same block.
+    func testAGameLikeBlockIsFollowedByItsOwnOrdinaryComparison() {
+        for variant in NextBlock.GameLikeVariant.allCases {
+            let last = NextBlock.LastBlock(role: .drill, spot: .three, countedShots: 10,
+                                           measureValue: 0.204, measureN: 10, gameLike: variant)
+            let d = NextBlock.decide(state(last: last, spotsDoneToday: [.three], blocksDoneToday: 3, shotsToday: 40))
+            XCTAssertEqual(d.plan.reasonKey, .afterGameLikeBlock, variant.rawValue)
+            XCTAssertEqual(d.plan.role, .baseline)
+            XCTAssertEqual(d.plan.spot, .three, "the comparison has to be at the same spot")
+            XCTAssertFalse(d.plan.cued)
+            XCTAssertTrue(d.plan.reason.contains("not scored against the plan"), d.plan.reason)
+            XCTAssertTrue(d.plan.reason.contains("0.204 m/s"), d.plan.reason)
+            XCTAssertTrue(d.plan.reason.contains(variant.limit), d.plan.reason)
+            XCTAssertTrue(d.plan.whatItBuys.contains("same day"), d.plan.whatItBuys)
+            XCTAssertTrue(d.alternatives.isEmpty, "one game-like block does not earn another")
+        }
+    }
+
+    /// The game-like row sits behind the Learn row and behind the missing-baseline row, both of
+    /// which describe a state in which nothing can be scored at all.
+    func testALearnBlockAndAMissingBaselineStillWinOverTheGameLikeRow() {
+        let learn = NextBlock.LastBlock(role: .drill, spot: .elbow, countedShots: 10,
+                                        measureValue: 0.2, measureN: 10,
+                                        fromLearnModule: true, gameLike: .contested)
+        XCTAssertEqual(NextBlock.decide(state(last: learn)).plan.reasonKey, .afterLearnBlock)
+
+        let noBaseline = NextBlock.LastBlock(role: .drill, spot: .elbow, countedShots: 10,
+                                             measureValue: 0.2, measureN: 10, gameLike: .fatigued)
+        XCTAssertEqual(NextBlock.decide(state(last: noBaseline, hasBaseline: false)).plan.reasonKey,
+                       .planNeedsNewBaseline)
+    }
+
+    // MARK: The shuffled order
+
+    func testTheShuffledOrderIsTheRightLengthUsesEverySpotAndNeverRepeatsBackToBack() {
+        let spots: [DoctorSpot] = [.freeThrow, .elbow, .midRange, .three]
+        for seed in UInt64(0)..<40 {
+            let order = NextBlock.randomSpotSequence(spots: spots, shots: 12, seed: seed)
+            XCTAssertEqual(order.count, 12)
+            XCTAssertEqual(Set(order), Set(spots), "seed \(seed) dropped a spot")
+            for i in 1..<order.count {
+                XCTAssertNotEqual(order[i], order[i - 1], "seed \(seed) put \(order[i].rawValue) twice in a row")
+            }
+        }
+    }
+
+    func testTheShuffledOrderIsTheSameEveryTimeForTheSameDay() {
+        let spots: [DoctorSpot] = [.freeThrow, .elbow, .midRange]
+        XCTAssertEqual(NextBlock.randomSpotSequence(spots: spots, shots: 9, seed: 7),
+                       NextBlock.randomSpotSequence(spots: spots, shots: 9, seed: 7),
+                       "a relaunch must not reshuffle a block that is half shot")
+        XCTAssertNotEqual(NextBlock.randomSpotSequence(spots: spots, shots: 9, seed: 7),
+                          NextBlock.randomSpotSequence(spots: spots, shots: 9, seed: 8))
+        XCTAssertTrue(NextBlock.randomSpotSequence(spots: [], shots: 9, seed: 1).isEmpty)
+        XCTAssertEqual(NextBlock.randomSpotSequence(spots: [.three], shots: 3, seed: 1), [.three, .three, .three])
+    }
+
+    /// The shuffled offer is one short **set** at each spot, in the app's order — not one shot at
+    /// each. A recording is saved at one spot, so a block spanning four would have to label every
+    /// shot in it with one of them, and that would be a number nobody measured.
+    func testTheShuffledOfferIsOneSetPerSpotAndCarriesTheOrderItWasBuiltWith() {
+        let last = NextBlock.LastBlock(role: .retention, spot: .freeThrow, countedShots: 10,
+                                       measureValue: 0.119, measureN: 10, hasCheck: true, checkPassed: true)
+        let d = NextBlock.decide(state(last: last, ladder: [.freeThrow, .elbow, .three],
+                                       blocksDoneToday: 3, shotsToday: 40))
+        guard let shuffled = d.alternatives.first(where: { $0.gameLike == .randomSpot }) else {
+            return XCTFail("no shuffled block was offered")
+        }
+        XCTAssertEqual(shuffled.spotSequence.count, 3, "one entry per set, one set per spot")
+        XCTAssertEqual(Set(shuffled.spotSequence), [.freeThrow, .elbow, .three])
+        XCTAssertEqual(shuffled.spot, shuffled.spotSequence.first, "the offer starts at the first set's spot")
+        XCTAssertGreaterThanOrEqual(shuffled.shots, 5, "a set is shots at one spot, not one shot")
+        for spot in shuffled.spotSequence {
+            XCTAssertTrue(shuffled.instruction.contains(spot.rawValue), shuffled.instruction)
+        }
+        XCTAssertTrue(shuffled.whatItBuys.contains("never mixed into one number"), shuffled.whatItBuys)
+        // Every other variant carries no sequence: only the shuffled one is an order the app made.
+        for plan in d.alternatives where plan.gameLike != .randomSpot {
+            XCTAssertTrue(plan.spotSequence.isEmpty)
+            XCTAssertEqual(plan.spot, .freeThrow, "every other condition is shot at the plan's spot")
+        }
+    }
+
     // MARK: The ladder itself
 
     func testStepOutGoesOneSpotFartherAndStopsAtTheThree() {

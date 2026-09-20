@@ -19,6 +19,7 @@ struct YouView: View {
     var body: some View {
         List {
             profileSection
+            gamesSection
             cameraSection
             privacySection
             advancedSection
@@ -56,6 +57,29 @@ struct YouView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             .font(.subheadline)
+        }
+    }
+
+    // MARK: Games (added 2026-09-19)
+
+    /// The game log lives under You rather than Review because it is the one thing in the app the
+    /// app did not measure: it is the shooter's own account of a game. Review is where measurements
+    /// live, and putting a typed-in number in among them would blur the line the whole feature
+    /// depends on.
+    private var gamesSection: some View {
+        Section {
+            NavigationLink {
+                GameLogView(store: store)
+            } label: {
+                Label("Games", systemImage: "list.clipboard")
+            }
+            Text("Log what you took and what went in after a game, and the app will put it beside your practice — with both counts, and with the smallest gap those counts could tell from luck.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } header: {
+            Text("Practice against games")
+        } footer: {
+            Text("This is the only place in ArcLab where a number comes from your memory rather than from the camera, and it is kept separate from the measured ones everywhere it appears.")
         }
     }
 

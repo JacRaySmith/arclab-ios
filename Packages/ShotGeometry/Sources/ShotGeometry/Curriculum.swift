@@ -126,6 +126,9 @@ public struct CurriculumFault: Sendable, Identifiable {
 
 public enum CurriculumModuleID: String, Sendable, Codable, CaseIterable, Identifiable {
     case base, footwork, dipAndRhythm, guideHand, releaseAndFollowThrough, range, offTheDribble, gameSpeed
+    /// Added 2026-09-19 (1.4 "game"). The two modules that come after the shot itself: moving the
+    /// ball, and doing it with somebody in the way.
+    case ballHandling, handlingUnderPressure
     public var id: String { rawValue }
 }
 
@@ -166,7 +169,8 @@ public enum Curriculum {
     ]
 
     public static let modules: [CurriculumModule] = [base, footwork, dipAndRhythm, guideHand,
-                                                     releaseAndFollowThrough, range, offTheDribble, gameSpeed]
+                                                     releaseAndFollowThrough, range, offTheDribble, gameSpeed,
+                                                     ballHandling, handlingUnderPressure]
 
     public static func module(_ id: CurriculumModuleID) -> CurriculumModule {
         // Total by construction: `modules` covers every case, asserted in the tests.
@@ -1111,6 +1115,316 @@ public enum Curriculum {
         openQuestions: [
             "ArcLab cannot film a defender or a shot clock, so this module is scored on sets inside your own session, which is a weaker test than a game.",
             "Spotting drift needs a first and a last set at the same spot in the same session, and one pair only shows a big change — three session pairs together show about 7.6 cm.",
+        ])
+
+    // MARK: 9 — Ball handling
+    //
+    // Added 2026-09-19 for 1.4 "game": *"I want to add ball handling drills. These should be as
+    // applicable to game situations as possible."*
+    //
+    // The honest shape of this module is set by one fact: **ArcLab has no ball-handling measure.**
+    // There is no detector for the ball in a hand, no published reference range for any dribbling
+    // quantity in skilled players, and nothing filmed. So no gate here scores a dribble. Every drill
+    // instead ends in the shot that came out of the move — which is the shot the app already
+    // measures, and which is what a game actually asks the handling to produce — and every gate on
+    // the handling itself is a count the shooter keeps, said in those words.
+    //
+    // Research: `docs/research/ball-handling-and-transfer-2026-09-19.md`. No controlled trial of
+    // ball-handling training with a game outcome was found (searched 2026-09-19), which is why the
+    // method grades below are C and D.
+
+    public static let ballHandling = CurriculumModule(
+        id: .ballHandling,
+        title: "Ball handling",
+        order: 8,
+        prerequisites: [.base],
+        summary: """
+            This is the part of the app with the least behind it, and it says so first. ArcLab cannot \
+            see a dribble at all: no detector, no published range to compare you with, nothing filmed. \
+            So nothing here is scored on your handling. What each drill does instead is finish in a \
+            shot, because the shot is the thing the app can measure and the thing the move exists to \
+            produce. The counts on the moves themselves are yours, and the app stores them as your \
+            word rather than as a measurement.
+            """,
+        whatCoachWatches: [
+            "Whether the ball is on the side of your body the defender cannot reach.",
+            "Whether the change of speed moves the defender, or only moves you.",
+            "Whether you come out of the move balanced enough to shoot your own shot.",
+            "Whether your eyes are on the floor or on what is in front of you.",
+        ],
+        cue: "Move the defender first, then take the space they give you.",
+        drills: [
+            CurriculumDrill(
+                drill: Drill(name: "Get to your spot", reps: 6, sets: 5, spots: [.elbow],
+                             constraint: "A shot counts only if your partner stayed within an arm's length until you picked the ball up. If they stood off you, it was not the drill.",
+                             schedule: "Change which side your partner starts on every set, rather than doing all the right-hand sets first.",
+                             setup: "The elbow, with a chalk mark to shoot from and a partner starting on your hip. 6 shots a set, 5 sets.",
+                             doThis: "Get to the mark with the ball on the far side of your body, then shoot.",
+                             watches: "The shot at the end: how much the speed you send the ball at varies, against your calm sets at the same mark.",
+                             doneWhen: "Your shots out of the move vary no more than about \(widerByPercent) % more than your calm sets. Whether you actually beat your partner is counted by you, not measured by the app.",
+                             why: "Practising a move on its own and practising it into a shot are different skills, and only the second one is what a game asks for.",
+                             detail: "Gate: releaseSpeedSD out of the move at or below 1.43 × your own un-cued block at the same spot — `DoctorStats.detectableSDRatio(n: 30)`. Whether the handling improved is not measured: there is no ball-handling metric in ArcLab and no controlled trial of one (`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.1, §1.3)."),
+                purpose: "Tie getting to your spot against a defender's hip to the shot it is supposed to produce.",
+                filmFrom: .sideView,
+                methodGrade: .c,
+                source: "Keeping the ball on the far hip is coaching consensus with a clear reason and no controlled measurement; no trial of a ball-handling drill against a game outcome was found (`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.1). The shot measure it closes on is grade A (Slegers, Lee & Wong 2021)."),
+            CurriculumDrill(
+                drill: Drill(name: "Change of pace pull-up", reps: 6, sets: 6, spots: [.elbow, .midRange],
+                             constraint: "A shot counts only if the slow part was slow enough that your partner closed the gap. Without that it is one dribble and a shot.",
+                             schedule: "Near mark first every set, then the far one.",
+                             setup: "The elbow and the mid-range, with a mark to shoot from and a partner to react to you. 6 shots a set, 6 sets.",
+                             doThis: "Slow the dribble for two beats, then go hard into one dribble and shoot.",
+                             watches: "The speed you send the ball at, and how far past the front of the ring your shots pass.",
+                             doneWhen: "Out of the change of pace your shots still pass between 25 and 28 cm past the front of the ring on average.",
+                             why: "A defender reacts to a change of speed rather than to the dribble itself, which coaches agree on and nobody has measured.",
+                             detail: "Gate: depthMeanCm inside the published 25–28 cm band, minimum 20 counted shots (Daly-Grafstein & Bornn 2019 JQAS, >50 000 NBA trajectories). The claim that the pace change is the active part of the move is grade C — no measurement of it was found."),
+                purpose: "Make the change of pace finish in a pull-up, which is the game version of it.",
+                filmFrom: .sideView,
+                methodGrade: .c,
+                source: "The pace change is coaching consensus with a rationale and no controlled measurement. The band it is scored on is Daly-Grafstein & Bornn 2019 (grade A)."),
+            CurriculumDrill(
+                drill: Drill(name: "Escape the trap", reps: 5, sets: 6, spots: [.midRange],
+                             constraint: "A go counts only if both partners closed to within an arm's length before you moved.",
+                             schedule: "Change which sideline you start on every set.",
+                             setup: "The mid-range, with two partners trapping you near the sideline and a mark to shoot from. 5 shots a set, 6 sets.",
+                             doThis: "Push the ball back out of the trap with one hard dribble, then get to the mark and shoot.",
+                             watches: "Only the shot at the end. ArcLab cannot see a trap, a dribble, or a ball you nearly lost.",
+                             doneWhen: "You get out of eight traps in ten with the ball still yours, counted by you, not measured by the app. The shot afterwards is the part the app scores.",
+                             why: "A lost ball costs a whole possession, which makes the escape the handling skill with the clearest price on it — and it is taught everywhere and tested nowhere.",
+                             detail: "The eight-in-ten mark is a convention, not a finding: no published success rate for escaping a trap exists in any population. The shot afterwards is scored on the ordinary depth and speed gates (`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.3)."),
+                purpose: "Practise the one handling mistake that costs a possession outright.",
+                filmFrom: .sideView,
+                methodGrade: .d,
+                source: "In-house: the eight-in-ten mark is a convention with nothing published behind it, and no study of trap escapes was found (searched 2026-09-19)."),
+            CurriculumDrill(
+                drill: Drill(name: "Pocket dribble read", reps: 6, sets: 5, spots: [.elbow],
+                             constraint: "A go counts only if the defender picked one thing to take away rather than standing still. A defender who does nothing gives you nothing to read.",
+                             schedule: "Change which way the screen is set every set.",
+                             setup: "The elbow, with one partner setting a screen and a second defending it. 6 shots a set, 5 sets.",
+                             doThis: "Take one dribble into the pocket behind the screen, read the defender, then shoot or pass.",
+                             watches: "The shots you take. The read itself is yours — the app has no way to see a defender or a pass.",
+                             doneWhen: "There is no pass mark. Count the reads with your partner and use the app only for the shots you took.",
+                             why: "The pocket dribble exists to buy the half-second a read needs, which is coaching convention with a clear reason and no measurement behind it.",
+                             detail: "No study of pick-and-roll ball-handler decisions with a measured outcome was found. The app stores the shots and nothing about the read; there is no handling or passing measure in ArcLab."),
+                purpose: "Couple the move to a decision, because in a game the move is never the whole task.",
+                filmFrom: .sideView,
+                methodGrade: .c,
+                source: "Constraints-led coaching consensus. The nearest evidence is a quasi-experimental game-based training study with no mechanics outcome (grade C, `healthy-shot-model-2026-09-14.md` §7)."),
+            CurriculumDrill(
+                drill: Drill(name: "Retreat and reset", reps: 6, sets: 5, spots: [.three],
+                             constraint: "A shot counts only if you gave up ground first. A shot taken over the top of the pressure is a different shot.",
+                             schedule: "One spot, every set, until the shot after the retreat looks like your ordinary one.",
+                             setup: "The three-point line, with a partner pressuring you and a mark to step into. 6 shots a set, 5 sets.",
+                             doThis: "Retreat two dribbles to win your space back, then step into the shot.",
+                             watches: "How much the speed you send the ball at varies, against your calm sets at the same spot.",
+                             doneWhen: "Your shots after a retreat vary no more than about \(widerByPercent) % more than your calm sets at the same spot.",
+                             why: "Backing out of trouble beats forcing a shot out of it, which every coach says and no study has tested — what can be checked is whether the shot afterwards is still yours.",
+                             detail: "Gate: releaseSpeedSD after the retreat at or below 1.43 × your own un-cued block at the same spot. That giving up ground is the better choice is grade D: no study of retreat dribbles was found."),
+                purpose: "Keep the shot intact after the move that a game forces most often.",
+                filmFrom: .sideView,
+                methodGrade: .d,
+                source: "In-house: no study of retreat dribbles or of shot selection under pressure at an individual level was found (searched 2026-09-19). The spread measure is grade A."),
+        ],
+        doneWhen: [
+            DoneCheck(
+                plainWords: "Out of a move, your shots still pass between 25 and 28 cm past the front of the ring on average.",
+                check: PassCheck(measure: .depthMeanCm, scope: .findingSpot,
+                                 target: .insideBand(low: depthBandCm.low, high: depthBandCm.high),
+                                 description: "your shots out of a move pass between 25 and 28 cm past the front of the ring on average",
+                                 minimumN: 20,
+                                 detail: "depthMeanCm inside the published band, minimum 20 counted shots. Daly-Grafstein & Bornn 2019 JQAS for the band. Nothing about the move is scored: this gate reads the shot only."),
+                grade: .a,
+                source: "Daly-Grafstein & Bornn 2019 JQAS for the band, from more than 50 000 tracked NBA trajectories. The gate reads the shot that came out of the move, never the move."),
+            DoneCheck(
+                plainWords: "Out of a move, your shots are no more scattered than on your calm sets — no more than about \(widerByPercent) % wider.",
+                check: PassCheck(measure: .releaseSpeedSD, scope: .findingSpot,
+                                 target: .narrowByFraction(notWiderRatio),
+                                 description: "your speed spread out of a move is no more than about \(widerByPercent) % wider than on your calm sets, which is the smallest widening 30 shots a side can tell from luck",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD out of the move at or below 1.43 × the calm block's — `DoctorStats.detectableSDRatio(n: 30)`, arithmetic. The versatility definition in healthy-shot-model-2026-09-14.md §4: a versatile shot is one whose spread does not inflate when the condition changes."),
+                grade: .a,
+                source: "healthy-shot-model-2026-09-14.md §4, on Slegers, Lee & Wong 2021 for release-speed spread predicting makes and Amaro et al. 2025 for the spread being what changes when conditions do. The ratio is arithmetic."),
+            DoneCheck(
+                plainWords: "Your handling itself got better.",
+                unavailableReason: "ArcLab has no way to measure a dribble. There is no detector for the ball in your hand, no published range to compare you with, and nothing has been filmed. Every count on a move in this module is yours, and the app keeps it as your word rather than as something it watched.",
+                detail: "`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.1 and §1.3. Searched 2026-09-19 and not found: a controlled trial of ball-handling training with a game outcome, and any published reference range for dribble height, hand speed or change-of-direction time in skilled players.",
+                grade: .d,
+                source: "`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.1. No controlled trial of ball-handling training with a game outcome was found (searched 2026-09-19)."),
+        ],
+        faults: [
+            CurriculumFault(
+                name: "The shot out of the move is not your shot",
+                howItShowsInNumbers: "The speed you send the ball at is more scattered on the sets that start with a move than on your calm sets at the same spot on the same day.",
+                hypothesis: .speedVariability,
+                grade: .a,
+                sources: ["The measure is grade A (Slegers, Lee & Wong 2021: velocity spread r = −0.96 with three-point makes across 12 skilled shooters).",
+                          "That the move is what widened it is your own comparison of two blocks, not a published fact."]),
+            CurriculumFault(
+                name: "A move that goes nowhere",
+                howItShowsInNumbers: "Nothing at all in the app. A move that does not shift your defender leaves no trace in any number ArcLab records, so this one is your partner's word and yours.",
+                hypothesis: nil,
+                grade: .c,
+                sources: ["Coaching consensus that a move is judged by what the defender does, not by how it looks. No controlled measurement was found (`docs/research/ball-handling-and-transfer-2026-09-19.md` §1.1)."]),
+            CurriculumFault(
+                name: "\"Two-ball drills make you a better ball handler\"",
+                howItShowsInNumbers: "Nothing. No trial of two-ball work against any game outcome was found, and the app cannot see a dribble, so neither the drill nor the claim can be checked here.",
+                hypothesis: nil,
+                grade: .d,
+                sources: ["Searched 2026-09-19 and not found: any controlled trial of two-ball dribbling against a game or transfer outcome. Shipped labelled rather than left out."]),
+            CurriculumFault(
+                name: "\"Keep your eyes up\"",
+                howItShowsInNumbers: "Nothing measurable here. Coaches say it everywhere; no study was found that measured head or eye position while dribbling against any outcome on a court.",
+                hypothesis: nil,
+                grade: .d,
+                sources: ["Searched 2026-09-19 and not found. The quiet-eye work is about a still shooter's gaze before a free throw, which is a different claim about a different moment."]),
+        ],
+        openQuestions: [
+            "No drill in this module has ever been shot by anyone, so every mark in it is a design rather than a result.",
+            "ArcLab cannot see whether you beat your partner. Count generously and the module will say you passed something it never watched.",
+            "A handling drill that ends in a shot is still not a possession. Nobody has measured whether either one carries into a game.",
+        ])
+
+    // MARK: 10 — Handling under pressure
+
+    public static let handlingUnderPressure = CurriculumModule(
+        id: .handlingUnderPressure,
+        title: "Handling under pressure",
+        order: 9,
+        prerequisites: [.ballHandling, .offTheDribble],
+        summary: """
+            The gap between an empty gym and a game is the thing this module is about, and there is \
+            more evidence for it than for anything in the module before. A measured gap exists: one \
+            college team shot better at the line in practice than in games across two seasons. What a \
+            defender changes at skilled level is not how the ball leaves your hand but how much the \
+            shots scatter. What tiredness changes is the shot itself, for some players and not for \
+            others. So each drill below puts one of those conditions on your ordinary shot and the app \
+            measures the same numbers it always does — while saying plainly that it cannot see your \
+            partner, the clock or the score.
+            """,
+        whatCoachWatches: [
+            "Whether the shot changes when somebody closes out, or only the result does.",
+            "Whether the last set of a tired session looks like the first one.",
+            "Whether you are deciding what to do before the ball arrives.",
+            "Whether a miss under pressure was short, or off to one side.",
+        ],
+        cue: "Shoot the same shot whoever is in front of you.",
+        drills: [
+            CurriculumDrill(
+                drill: Drill(name: "Called on the catch", reps: 6, sets: 6, spots: [.elbow, .three],
+                             constraint: "A shot counts only if the call came after the ball left your partner's hands. A call you heard early is not a decision.",
+                             schedule: "Mix the three calls with no pattern, and change spot every set.",
+                             setup: "The elbow and the three, with a passer who calls what to do as the ball leaves their hands. 6 shots a set, 6 sets.",
+                             doThis: "Do whatever your partner calls at the catch, without deciding before the ball arrives.",
+                             watches: "The shots you take: the speed you send the ball at, and how far past the front of the ring they pass.",
+                             doneWhen: "Your called sets vary no more than about \(widerByPercent) % more than the sets where you knew what was coming.",
+                             why: "Practising a decision and practising a shot are different tasks, and in the one randomised trial of practice order, the easy version won while they practised and lost on the test afterwards.",
+                             detail: "Shamshiri et al. 2025 (84 novice females, randomised, 3 days): one-condition practice scored 1.79 during practice against 1.11–1.52, then 1.28 on the later test against 1.69–1.73 and 0.54 on transfer against 1.27–1.38. Grade B: novices, three days. The call the partner made is typed in by you if you enter it; the app never hears it."),
+                purpose: "Couple the shot to a decision made at the catch, which is what a possession actually does.",
+                filmFrom: .sideView,
+                methodGrade: .c,
+                source: "Constraints-led coaching consensus, with the practice-order evidence behind it one step removed: Shamshiri et al. 2025 is randomised but on 84 novices over three days, and its task was shooting rather than deciding (grade B for that study, C for this drill)."),
+            CurriculumDrill(
+                drill: Drill(name: "Tired sets", reps: 8, sets: 6, spots: [.three],
+                             constraint: "A set counts only if you started it inside ten seconds of stopping. Rest first and it is an ordinary set.",
+                             schedule: "One fresh set first, then a run and a set, over and over, to the end.",
+                             setup: "One spot, a timer, and something to run — the length of the court is enough. 8 shots a set, 6 sets.",
+                             doThis: "Run hard for ninety seconds, then shoot your set straight away with no rest.",
+                             watches: "The angle your ball is falling at and how far past the front of the ring your shots pass, tired against fresh.",
+                             doneWhen: "There is no pass mark. The app shows what the running did to your shot, and some players lose nothing at all.",
+                             why: "Twelve minutes of game-like running cost 38 high-level players 14–19 % of their makes and 3–4 % of their falling angle, while elite juniors lost nothing, so it has to be measured on you.",
+                             detail: "Bourdas et al. 2024: 38 high-level players, 12-min simulated game protocol, entry angle −3.1 to −3.9 %, release time +15–25 %, makes −14 to −19 %. Li et al. 2025 meta, k = 14, n = 388. Slawinski et al. 2018: no release change in elite U18s after repeated sprints. The 90 s bout is shorter than any of those protocols and is our own choice, stated as such."),
+                purpose: "Find out whether tiredness moves your shot at all, instead of assuming it does.",
+                filmFrom: .sideView,
+                methodGrade: .b,
+                source: "The effect is grade A (Bourdas et al. 2024; Li et al. 2025 meta of 14 studies, n = 388), with a grade-A exception (Slawinski et al. 2018, no change in elite U18s). The 90-second bout is our own shortening of a 12-minute protocol, which is why the drill is B rather than A."),
+            CurriculumDrill(
+                drill: Drill(name: "Hands up", reps: 6, sets: 6, spots: [.three],
+                             constraint: "A shot counts only if your partner got a hand inside the line between the ball and the ring. A late closeout is an open shot.",
+                             schedule: "One open set, one set with hands up, in that order every time — the comparison is the point.",
+                             setup: "The three, with a partner closing out with a hand up. 6 shots a set, 6 sets — three open, three with hands up.",
+                             doThis: "Shoot your normal shot with your partner's hand in front of the ball.",
+                             watches: "How much your shots scatter, front to back and left to right, against your open sets. ArcLab cannot see your partner at all.",
+                             doneWhen: "Your pressured sets scatter no more than about \(widerByPercent) % more than your open sets at the same spot.",
+                             why: "In NBA tracking a tight contest left the technique alone and widened the scatter by about half, so the scatter is the thing worth watching.",
+                             detail: "Daly-Grafstein & Bornn 2020: tight contests biased shots short and raised depth spread 56 % and left-right spread 38 %. Amaro et al. 2025 (18 national-level players, 90 shots each): no significant effect of a 1.2×-height defender at 1 m or 105 dBA noise on jump height, release height, angle or velocity, all p ≥ 0.092. That a partner's closeout resembles a game contest is grade D — nobody has measured it."),
+                purpose: "Put the one condition on the shot that large-n tracking says changes the result.",
+                filmFrom: .sideView,
+                methodGrade: .c,
+                source: "The measures are grade A (Daly-Grafstein & Bornn 2020 on >50 000 tracked shots; Amaro et al. 2025 for the null on technique). That a partner with a hand up stands in for a game defender is untested — grade D for that step, which is what holds this drill at C."),
+            CurriculumDrill(
+                drill: Drill(name: "Shuffled spots", reps: 5, sets: 8, spots: [.freeThrow, .elbow, .midRange, .three],
+                             constraint: "A set counts only if the set before it was at a different spot. Two in a row at the same place is not this drill.",
+                             schedule: "Shuffled: a different order every session, and never two sets in a row at the same spot. The app will pick the order for you.",
+                             setup: "Four spots marked on the floor. 5 shots a set, 8 sets — two sets at each spot.",
+                             doThis: "Shoot one set, then move to a different spot for the next one.",
+                             watches: "The speed you send the ball at, spot by spot, against the sessions where you stayed in one place.",
+                             doneWhen: "Your shuffled sets vary no more than about \(widerByPercent) % more than your one-spot sets. Shuffling usually looks worse on the day and holds up better later.",
+                             why: "In the one randomised trial of practice order for shooting, staying in one place won while they were practising and came last on the test afterwards.",
+                             detail: "Shamshiri et al. 2025, 84 novice females, randomised, 3 days: one-condition practice 1.79 during practice against 1.11–1.52, 1.28 on the later test against 1.69–1.73 (ηp² = 0.24), 0.54 on transfer against 1.27–1.38. Shoenfelt et al. 2002 (94 participants, 3 weeks, randomised): varied practice equalled constant practice on the delayed test. Grade B both: novices and short. The order comes from `NextBlock.randomSpotSequence`, which never repeats a spot back to back. Note the limit: ArcLab shuffles **sets**, not single shots, because a recording is saved at one spot and shots from different spots are never pooled into one number. A one-shot-per-spot version of this drill cannot be measured by this app at all."),
+                purpose: "Make the app's own shuffled order the drill, since it is the one game-like condition ArcLab knows in advance.",
+                filmFrom: .sideView,
+                methodGrade: .b,
+                source: "Shamshiri et al. 2025 (randomised, 84 novice females, 3 days) and Shoenfelt et al. 2002 (randomised, 94 participants, 3 weeks). Both are grade B: novices and short studies, so the size of the effect in a shooter who takes 300 shots a session is unknown."),
+        ],
+        doneWhen: [
+            DoneCheck(
+                plainWords: "Under pressure your shots are no more scattered than when you are left alone: no more than about \(widerByPercent) % wider.",
+                check: PassCheck(measure: .releaseSpeedSD, scope: .findingSpot,
+                                 target: .narrowByFraction(notWiderRatio),
+                                 description: "your pressured set's speed spread is no more than about \(widerByPercent) % wider than your calm set's, which is the smallest widening 30 shots a side can tell from luck",
+                                 minimumN: 25,
+                                 detail: "releaseSpeedSD, pressured block at or below 1.43 × the calm block's — `DoctorStats.detectableSDRatio(n: 30)`. Amaro et al. 2025: a defender and 105 dBA noise changed nothing measurable about the release in 18 national-level players (all p ≥ 0.092); Daly-Grafstein & Bornn 2020: contests raised depth spread 56 % and left-right spread 38 % without moving the mean."),
+                grade: .a,
+                source: "healthy-shot-model-2026-09-14.md §4: a versatile shot is one whose spread does not inflate when the condition changes. Amaro et al. 2025 for the technique null, Daly-Grafstein & Bornn 2020 for the scatter. The ratio is arithmetic."),
+            DoneCheck(
+                plainWords: "After running, your ball still falls at 40° or steeper.",
+                check: PassCheck(measure: .entryAngleMeanDegrees, scope: .findingSpot,
+                                 target: .insideBand(low: 40, high: 52),
+                                 description: "your tired set's average falling angle is 40° or steeper, the same as your fresh set's",
+                                 minimumN: 20,
+                                 detail: "entryAngleMeanDegrees inside 40–52°, minimum 20 counted shots. The 40° floor is exact geometry; that falling angle is the channel game load moves is Bourdas et al. 2024 (−3.1 to −3.9 %). That it moves for you is measured, never assumed — Slawinski et al. 2018 found no change in elite U18s."),
+                grade: .a,
+                source: "Bourdas et al. 2024 for entry angle being what falls under game load; the 40° band is exact geometry. Slawinski et al. 2018 is the grade-A exception: measure it, never assume it."),
+            DoneCheck(
+                plainWords: "You make the same share of your shots in a game as you do in practice.",
+                unavailableReason: "ArcLab never sees a game. The only comparison it can make is against shots you type in yourself afterwards, and it needs 20 on each side before two make rates can be told apart at all — below that it says so instead of drawing a conclusion.",
+                detail: "`GameTransfer.floor` is `ShotDoctor.attributionFloor` (20 counted shots a side), reused rather than invented; the smallest gap your own counts can resolve is printed at your own n from `GameTransfer.detectableMakeRateDifference`, a 95 % Wald interval on a difference of two proportions. Kozar, Vaughn, Lord & Whitfield 1995 (J Sport Behavior 18(2):123–129) found practice free-throw percentage significantly above game percentage for one NCAA team over two seasons; the magnitude is UNVERIFIED (`docs/research/ball-handling-and-transfer-2026-09-19.md` §2.1). A practice make is inferred from the ball at the ring; a game make is typed from memory. They are never added together.",
+                grade: .b,
+                source: "Kozar, Vaughn, Lord & Whitfield 1995, Journal of Sport Behavior 18(2):123–129 — practice free-throw percentage significantly higher than game percentage for one NCAA team across two seasons. Grade B: one team, retrospective, and the effect size could not be retrieved."),
+        ],
+        faults: [
+            CurriculumFault(
+                name: "Practice shooter, game shooter",
+                howItShowsInNumbers: "Your make rate in games sits below your make rate in practice by more than the two counts can explain. It needs 20 shots logged on each side before the app will say anything at all.",
+                hypothesis: nil,
+                grade: .b,
+                sources: ["Kozar, Vaughn, Lord & Whitfield 1995: practice free-throw percentage significantly higher than game percentage for one NCAA team over two seasons. One team, retrospective, magnitude unverified.",
+                          "The comparison is a difference of two proportions, so the app prints the smallest gap your own counts can tell rather than a verdict."]),
+            CurriculumFault(
+                name: "Falling apart when you are tired",
+                howItShowsInNumbers: "Your ball falls at a shallower angle and takes longer to leave your hand in the sets after running than in the fresh ones, with the makes following.",
+                hypothesis: .fatigueDrift,
+                grade: .a,
+                sources: ["Bourdas et al. 2024: 38 high-level players, 12-min simulated game protocol, makes −14 to −19 %, entry angle −3.1 to −3.9 %.",
+                          "Li et al. 2025 meta-analysis, 14 studies, n = 388. Slawinski et al. 2018 is the exception that makes it worth measuring on you."]),
+            CurriculumFault(
+                name: "\"More reps in an empty gym will fix it\"",
+                howItShowsInNumbers: "Nothing you can see on the day, which is the trap. The easy version of practice scored best while it was being practised and worst on the test afterwards in the one randomised trial there is.",
+                hypothesis: nil,
+                grade: .c,
+                sources: ["Shamshiri et al. 2025 (84 novice females, randomised, 3 days) and Shoenfelt et al. 2002 (94 participants, 3 weeks). Both grade B, neither on a skilled shooter — applying them to you is an inference, which is why this line is C."]),
+            CurriculumFault(
+                name: "\"Some players are just clutch\"",
+                howItShowsInNumbers: "Nothing ArcLab can test. It cannot see the score or the clock, the late-game mark in your game log is a label you type, and a handful of late shots cannot separate a clutch shooter from a good night.",
+                hypothesis: nil,
+                grade: .d,
+                sources: ["Searched 2026-09-19 and not found: a study isolating late-game shooting from shot selection and defence at an individual level.",
+                          "The counts needed to tell two make rates apart are in `docs/research/ball-handling-and-transfer-2026-09-19.md` §2.4: about 31 points at 20 shots a side, 20 points at 50, 14 points at 100."]),
+        ],
+        openQuestions: [
+            "ArcLab cannot see a defender, a clock or a score. Every game-like block is your own word that the condition was really there.",
+            "Your game log is typed from memory after the game; your practice makes are inferred from the ball at the ring. They are two different measurements, so the app shows them side by side and never adds them together.",
+            "Nobody has shot these blocks yet, so it is unknown whether practising under these conditions moves anything in a game.",
         ])
 }
 
