@@ -15,6 +15,14 @@ struct HistoryView: View {
     var body: some View {
         List {
             if let err = store.loadError { Section("Error") { Text(err).foregroundStyle(.red) } }
+            // Game film (1.4): the one way in, here because film review is about looking back at what
+            // happened, which is what this screen is for. Self-contained — it brings its own store.
+            Section {
+                FilmReviewEntryCard()
+            } footer: {
+                Text("You tag your own possessions while you watch. The app keeps them and reads them back; it does not judge a decision for you.")
+                    .font(.caption)
+            }
             if store.sessions.isEmpty {
                 Section {
                     Text("No saved sessions yet. After a session is analysed, save it from the Session screen with the spot it was shot from. Sessions from the same spot pool together here until the 30 accepted shots a finding needs are in.")
