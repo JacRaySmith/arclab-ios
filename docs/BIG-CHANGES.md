@@ -48,7 +48,7 @@ the chosen spot's distance (`AnalysisOptions.knownReleaseDistance`) and the rim-
 report the solve as "distance-assumed" rather than free when the free solve is outside the band; add the
 30–45° off-line clip the user still owes as the second view. *Gate:* a FormEval/GeometryHarness re-baseline
 with before/after acceptance on the two 09-17/09-19 three sessions (36 + 36 shots), no metric gaining a
-number it previously refused, `g` stays the check. *Status:* not started; needs the off-line clip.
+number it previously refused, `g` stays the check. *Status:* **root cause found and largely fixed 2026-09-24** — it was the rim trace's implied vertical, not the scale (see `docs/research/three-point-acceptance-2026-09-24.md`). Threes went 1/25 → 12/25 accepted on the corpus, recall 4.8 % → 52.4 %. Remaining refusals are track quality, not geometry. The off-line clip is still wanted.
 
 **B2. A persisted, crash-proof session state machine.** Record → scan → analyse → save must survive a process
 death at any step, with the clip kept on disk until the session is saved or discarded, a checkpoint after each
@@ -96,6 +96,22 @@ while the docs and GitHub tag say 1.3, so the log cannot tell which build a beha
 `MARKETING_VERSION` / build number set from the release tag at every phone install. *Status:* done 2026-09-19 (1.3.1 (2)).
 
 **B10. Film auto-tagging** — see `docs/DESIGN-FILM-REVIEW-2026-09-19.md`; v1 (1.4) is manual tags plus rim-scanner shot candidates. *Gate:* a measured candidate recall on real game film before any auto-tag claim. *Status:* design only.
+
+
+**B11. Track quality is now the recall ceiling.** Measured 2026-09-24 over the labelled corpus: the real shots
+still refused have degenerate plane solves — ambiguity ratio 0.82–0.95, solve residual 0.21 m against 0.015 m
+for accepted windows, and the ball diameter implied by their own track drifting **58 % along a single track**.
+Forcing a correct shot-plane azimuth rescues none of them, so this is detection, not geometry. *Change:* make
+the detector's diameter self-consistent along a track (the size cannot really change 58 % in flight), and treat
+a track whose implied size drifts as untrustworthy rather than fitting it. *Gate:* recall on the labelled
+98-window corpus, precision held at 100 %, within-block release-height spread per **position** (not per clip —
+`IMG_1765` holds two). *Status:* not started; this is the highest-value open measurement lead.
+
+**B12. The bench groups by clip, but a clip is not a block.** `IMG_1765` contains two shooting positions, so
+its within-block spread (0.465 m) was averaging two stations; within one it is 0.190 m. *Change:* group the
+spread statistics by recovered standing position, which needs the shooter's feet in the window cache
+(`--dump-windows` does not write pose landmarks today). *Status:* not started; it silently distorts any
+spread-based verdict until done.
 
 ## 2. Footage the user owes (blocks B1, B6 and the footwork work)
 

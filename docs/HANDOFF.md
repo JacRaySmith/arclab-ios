@@ -1,3 +1,93 @@
+# START HERE — state on 2026-09-24, written for the next agent
+
+**Read in this order:** `CLAUDE.md` → this section → `docs/PIPELINE.md` (how to measure anything) →
+`docs/EXPERIMENTS.md` (12 rows, every decision traceable to a p-value) → `docs/BENCH-RESULTS-2026-09-24.md`
+and `docs/BENCH-RESULTS-azimuth-2026-09-24.md` (the tables) → `docs/BIG-CHANGES.md` (the ranked backlog).
+The 2026-09-19 section below is still accurate for 1.4's features; this section supersedes it for measurement.
+
+## The one thing that changed: there is now a measurement loop
+
+Do not change analysis behaviour without running it. Three commands:
+
+```
+TrajectoryProbe session <clip> --rim <rim.json> --time-scale 4 --no-pose --spot <name> --dump-windows <dir>
+ShotBench run <dir> --variant <name> --json out.json      # replays the cache, no video, seconds
+ShotBench compare base.json cand.json                      # exact McNemar on flipped verdicts
+```
+
+The cache for the three 2026-09-13 clips is **not in the repo** (reproducible, and /private/tmp is purged
+after a few days). Rebuild it with the first command; it takes about 2.5 minutes per clip. Variants are
+declarative entries in `ShotBenchKit/Variants.swift` — adding an experiment is adding one entry.
+
+**Read acceptance rate with its guards, never alone.** Every scorecard also carries median |g error|, fit
+residual, within-block release-height and release-speed spread, and — since the corpus was labelled —
+precision and recall. A variant that accepts more while worsening the others is a regression.
+
+## What the corpus says (98 windows, all labelled by eye in `docs/footage-2026-09-13/window_labels.json`)
+
+| | baseline | best kept (`autoFoundTrace`) |
+|---|---|---|
+| overall recall | 43.2 % | 56.8 % |
+| threes | 4.8 % | 52.4 % |
+| free throws | 39.3 % | 39.3 % |
+| precision | 100 % | 100 % |
+
+**Precision has been 100 % for every variant on every clip.** Not one accepted window was a non-shot. The
+app's whole problem is recall — it throws real shots away — and nothing you do may cost that precision.
+
+## Findings that should shape what you do next
+
+1. **A hand-traced rim silently sets the calibration's "up".** `IMG_1766`'s trace was 15.02° from gravity;
+   the auto-found trace was 0.538°. A tilt ε costs ≈ `L·sin ε` of release height — zero at the rim, 1.7 m at
+   a three — so the rim reprojects perfectly and only distant shots are refused. Shipped in the app: gravity
+   sampled during recording, `RimGravity.arbitrate` (3° margin, a stated convention), `RimTrustCard`, and
+   `rim.calibrated` logging both candidates' angles.
+2. **`IMG_1765` contains two shooting positions, not one** (13 shots near 241.3°, 15 near 293.7°). Its
+   "within-block spread" was measuring a block that is not one block: 0.465 m pooled, **0.190 m** within a
+   single position. Any per-clip grouping in the bench inherits this bug.
+3. **Recall is a track-quality problem, not a geometry one.** The refused labelled shots have degenerate
+   plane solves — ambiguity ratio 0.82–0.95, solve residual 0.21 m against 0.015 m for accepted, and implied
+   ball size drifting 58 % along a single track. Forcing a correct azimuth rescues none of them.
+   **This is the highest-value open lead.**
+4. **Azimuth is not the lever.** Measured: 0.025 m of release height per degree, and within-block azimuth
+   spread is 1.2–2.5°, so it explains 2–4 % of the variance. Pooling it made things worse (free-throw recall
+   39.3 % → 14.3 %, p = 0.0078). Nothing shipped; the apparatus is kept.
+5. **Logged, not acted on:** `solveByFixedGravity` reaches 0.2–2 % g-error at two azimuths 52° apart, which
+   weakens "g is the check" in that path — a `CLAUDE.md` rule concern worth a decision. Also the plausibility
+   band admits a 3.19 m release height.
+
+## Work in flight, and its state
+
+- **Court-anchored pose** (`CourtCalibration.swift`, defaulted off, merged): built but **not validated** —
+  its agent stalled twice and the work was rescued. Read `docs/research/court-anchored-pose-2026-09-24.md`
+  before touching it; it names the three things that were never done.
+- **Multi-view 3-D** (`MultiViewFit.swift`, `MultiViewSync.swift`, merged, tested synthetically only):
+  `docs/DESIGN-MULTIVIEW-2026-09-24.md` has the sweeps. Cameras want **45–90° bearing separation**; sync is
+  recovered from the ball itself to 3–4 ms against an ~8 ms tolerance, so the two phones need no synchronised
+  start. Awaiting footage.
+
+## Blocked on the user
+
+- **Footage:** the second-angle clips for multi-view; the 30–45° off-line clip; the close-up form clip; the
+  footwork request in `docs/DESIGN-FOOTWORK-2026-09-15.md` §6; the behind clip with tape for spin.
+- **The phone:** 1.4 (build 3) is installed and signed, but iOS needs the developer certificate trusted under
+  Settings → General → VPN & Device Management. **Free-provisioning profiles last 7 days**, so a build
+  installed on 2026-09-24 stops launching around 2026-10-01 and must be reinstalled.
+- **Nothing on the phone has exercised the new rim logging yet**, so whether the user's own traces carry the
+  tilt is still unanswered. It is answered the moment one session runs on 1.4 and the log is pulled.
+
+## Traps this session hit, so you do not
+
+- `build-app.sh` (in the scratchpad) once **did not run `xcodegen generate`**, so a newly added file was never
+  compiled and the build still printed SUCCEEDED. It also built Debug. And its verdict line could be dropped
+  by `sort -u | tail`, and it exited 0 on a signing failure. All fixed — but the lesson generalises: **a gate
+  that cannot report its own failure is worse than no gate.** Check that a gate would catch its own absence.
+- Worktree agents stall. Tell them to **commit early**; rescuing 1 548 uncommitted lines is luck, not process.
+- Several agents forked before others merged and reported different test baselines. Always merge `main` into
+  the worktree before judging a count. Current: **426 ShotGeometryTests + 27 FormEvalKitTests**, `GATE: PASS`.
+
+---
+
 # START HERE — state on 2026-09-19 (afternoon PT): 1.4 merged on main
 
 **1.4 = 1.3.1 (morning, below) + four more Opus worktree agents merged by hand.** Entry points: You → Games, You → Your body
