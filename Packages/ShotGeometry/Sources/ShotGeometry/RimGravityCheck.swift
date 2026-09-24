@@ -224,4 +224,63 @@ public enum RimGravity {
         }
         return agreement
     }
+
+    // MARK: - Choosing between a hand trace and an auto-found trace
+
+    /// Which boundary points actually reached `RimCalibrator.calibrate`.
+    public enum ArbitrationWinner: String, Sendable {
+        case traced
+        case autoFound
+    }
+
+    /// What gravity decided between a shooter's hand trace and an automatically found trace of the
+    /// same rim, and why — the record `arbitrate(tracedDisagreement:autoFoundDisagreement:)` returns.
+    public struct Arbitration: Sendable {
+        public var winner: ArbitrationWinner
+        /// `RimUpAgreement.disagreement` for the hand trace, radians. `nil` when gravity was
+        /// unavailable or the trace itself would not solve.
+        public var tracedDisagreement: Double?
+        /// The same for the auto-found candidate. `nil` when the finder never ran, found nothing, its
+        /// candidate would not solve, or gravity was unavailable.
+        public var autoFoundDisagreement: Double?
+        /// True exactly when the app is using boundary points the shooter did not themselves draw —
+        /// the one case CLAUDE.md's "never fabricate, never act silently" spirit requires the shooter
+        /// be told about (`RimTrustCard`).
+        public var usedRimTheShooterDidNotDraw: Bool { winner == .autoFound }
+
+        public init(winner: ArbitrationWinner, tracedDisagreement: Double?, autoFoundDisagreement: Double?) {
+            self.winner = winner
+            self.tracedDisagreement = tracedDisagreement
+            self.autoFoundDisagreement = autoFoundDisagreement
+        }
+    }
+
+    /// Past this the two candidates are treated as different enough that gravity should pick between
+    /// them, radians.
+    ///
+    /// **A convention chosen to avoid churn, not a measured finding** — like `RimUpAgreement.tolerance`,
+    /// no study fixed this number. It exists so that two traces which already agree with gravity —
+    /// on the 2026-09-13 corpus, 1.37° vs 1.24° on the elbow clip and 3.26° vs 1.72° on the free-throw
+    /// clip — are never swapped over a fraction of a degree, which would only look like the app
+    /// second-guessing a shooter who traced the ring correctly. The clip this exists for is the one
+    /// where the gap was never close: 15.02° (hand) vs 0.54° (auto-found) on the three-point clip
+    /// (`docs/research/three-point-acceptance-2026-09-24.md` §2).
+    public static let arbitrationMargin = Angle.radians(3)
+
+    /// Choose between a hand trace and an auto-found trace using how far each disagrees with gravity
+    /// (`compare(...).disagreement` on each candidate, computed independently). The trace wins every
+    /// tie and every case where one side is missing — there is nothing to arbitrate with only one
+    /// candidate, or with no gravity, and the shooter's own work is the default absent a decisive
+    /// reason to leave it.
+    ///
+    /// Pure and stateless on purpose: it only ever sees two angles and a margin, so it can be tested
+    /// against the exact recorded numbers rather than against a rim trace and a mocked sensor.
+    public static func arbitrate(tracedDisagreement: Double?, autoFoundDisagreement: Double?) -> Arbitration {
+        guard let traced = tracedDisagreement, let autoFound = autoFoundDisagreement else {
+            return Arbitration(winner: .traced, tracedDisagreement: tracedDisagreement,
+                               autoFoundDisagreement: autoFoundDisagreement)
+        }
+        let winner: ArbitrationWinner = autoFound + arbitrationMargin < traced ? .autoFound : .traced
+        return Arbitration(winner: winner, tracedDisagreement: traced, autoFoundDisagreement: autoFound)
+    }
 }
