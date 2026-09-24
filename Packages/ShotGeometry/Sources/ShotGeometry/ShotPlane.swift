@@ -140,12 +140,24 @@ public enum ShotPlaneSolver {
     /// The mirror plane (azimuth + π) has the same residual; the convention "shooter at negative x" resolves it.
     /// With `knownDistance`, candidates whose first sample is not within `distanceTolerance` of that horizontal
     /// distance from the rim centre are rejected, which also pins the scale sanity.
+    ///
+    /// `allowedAzimuths` (default nil, so every existing caller is unchanged) restricts the scan to
+    /// a set of azimuth windows — what a court-anchored pose supplies in place of the free 0…2π
+    /// search. Outside those windows the objective is not even evaluated, so an azimuth the court
+    /// says is impossible can never win on residual alone.
     public static func solveByFixedGravity(_ samples: [ImageSample], calibration: RimCalibration, intrinsics: CameraIntrinsics,
                                            knownDistance: Double? = nil, distanceTolerance: Double = 0.8,
-                                           coarseStepDegrees: Double = 2) -> AzimuthSolution? {
+                                           coarseStepDegrees: Double = 2,
+                                           allowedAzimuths: [AzimuthWindow]? = nil) -> AzimuthSolution? {
         guard samples.count >= 8 else { return nil }
+        if let windows = allowedAzimuths, windows.isEmpty { return nil }
         var fo = TrajectoryFitOptions(); fo.fixedG = Court.g; fo.minimumSamples = 5; fo.minimumSpan = 0.05
+        func allowed(_ az: Double) -> Bool {
+            guard let windows = allowedAzimuths else { return true }
+            return windows.contains { $0.contains(az) }
+        }
         func cost(_ az: Double) -> (rms: Double, x0: Double)? {
+            guard allowed(az) else { return nil }
             let fr = frame(calibration: calibration, azimuth: az)
             guard let pl = project(samples, intrinsics: intrinsics, frame: fr), pl.count >= 8, let x0 = pl.first?.x, x0 < 0 else { return nil }
             if let L = knownDistance, abs(-x0 - L) > distanceTolerance { return nil }
@@ -161,6 +173,14 @@ public enum ShotPlaneSolver {
                 if best == nil || c.rms < best!.rms { best = (az, c.rms) }
             } else { curve.append((az, .infinity)) }
             az += Angle.radians(coarseStepDegrees)
+        }
+        // A window narrower than the coarse step can fall between grid points; always try its centre.
+        for w in allowedAzimuths ?? [] {
+            let c = atan2(sin(w.center), cos(w.center)) + (w.center < 0 ? 2 * Double.pi : 0)
+            if let cost = cost(w.center) {
+                curve.append((c, cost.rms))
+                if best == nil || cost.rms < best!.rms { best = (w.center, cost.rms) }
+            }
         }
         guard var b = best else { return nil }
         // Golden-section refinement in ± one coarse step.
