@@ -1,0 +1,510 @@
+{
+  "note": "Labels made by an agent (Claude, this repo's coding assistant) on 2026-09-24, by eye, from tiled review images \u2014 four frames per window extracted with `TrajectoryProbe frame` (evenly spaced across the window's fileStart..fileEnd) and tiled 2x2 with CoreGraphics/AppKit (see docs/PIPELINE.md and this task's scratch tooling; the tiling script and raw frames are not checked in). This is one person's (one agent's) visual judgement from four still frames per window, not authoritative ground truth: fast actions between sampled frames can be missed, and some labels (a drive-in layup vs. a standing jumper, a ball whose release fell between two sampled frames) are genuinely close calls \u2014 see the per-window `reason` for every `notShot` and `unsure`, and the task's final report for which `shot` calls were judgment calls too. `unsure` is a deliberate, real label: those windows are excluded from precision/recall scoring entirely (counted in neither the numerator nor denominator of either metric), not folded into `notShot` and not counted as `shot` \u2014 see `PrecisionRecall.swift`.",
+  "clips": [
+    "IMG_1764.mov",
+    "IMG_1765.mov",
+    "IMG_1766.mov"
+  ],
+  "labels": [
+    {
+      "windowID": "IMG_1764@0000.0",
+      "clip": "IMG_1764.mov",
+      "label": "notShot",
+      "reason": "empty court, no player or ball visible in any of the 4 frames"
+    },
+    {
+      "windowID": "IMG_1764@0013.9",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0026.8",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0044.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0058.0",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0101.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0139.1",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0191.8",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0212.5",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0230.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0271.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0306.8",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0367.2",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0407.2",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0486.6",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0538.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0570.6",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0586.5",
+      "clip": "IMG_1764.mov",
+      "label": "notShot",
+      "reason": "rebound retrieval \u2014 ball already descending/in flight at frame 0 (tail of the previous window's shot); player runs in and grabs it near the rim, no release visible in this window"
+    },
+    {
+      "windowID": "IMG_1764@0621.9",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0662.0",
+      "clip": "IMG_1764.mov",
+      "label": "notShot",
+      "reason": "no release visible \u2014 player only walks and holds the ball across all 4 frames (retrieval / dead time between shots)"
+    },
+    {
+      "windowID": "IMG_1764@0685.8",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0729.9",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0766.1",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0815.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0830.3",
+      "clip": "IMG_1764.mov",
+      "label": "unsure",
+      "reason": "ball already bouncing toward the player at frame 0 (likely a rebound); frames 1-3 show a drive toward the rim but the body mechanics don't clearly show a release \u2014 can't tell if this is a putback shot or just a scramble near the basket"
+    },
+    {
+      "windowID": "IMG_1764@0879.1",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0899.2",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0939.9",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@0971.7",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1002.0",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1025.3",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1049.8",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1063.7",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1102.7",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1144.5",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1159.5",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1200.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1220.5",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1256.4",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1279.8",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1297.3",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1313.0",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1764@1329.7",
+      "clip": "IMG_1764.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0005.4",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0017.7",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0032.0",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0044.3",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0087.1",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0101.0",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0146.8",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0161.9",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0228.9",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0271.8",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0311.3",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0353.4",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0399.1",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0413.1",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0457.1",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0486.9",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0501.5",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0540.7",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0632.8",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0667.5",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0740.8",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0758.2",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0814.4",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0829.5",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0899.7",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@0930.1",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@1075.3",
+      "clip": "IMG_1765.mov",
+      "label": "unsure",
+      "reason": "clear pre-shot rise pose in frame 1, but frame 2 shows the ball already back in the player's hands with no visible flight, and frame 3 is empty (player off-frame) \u2014 can't confirm a release happened in this window"
+    },
+    {
+      "windowID": "IMG_1765@1091.8",
+      "clip": "IMG_1765.mov",
+      "label": "unsure",
+      "reason": "frame 0's ball-in-flight appears to be the tail of the previous window's shot; frame 2 shows a shot-like rise pose but frame 3 shows the player dribbling on the ground with no ball in flight \u2014 can't confirm a release within this window"
+    },
+    {
+      "windowID": "IMG_1765@1109.2",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1765@1122.2",
+      "clip": "IMG_1765.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0000.0",
+      "clip": "IMG_1766.mov",
+      "label": "notShot",
+      "reason": "clip start \u2014 empty court, then the player just walks into frame; no ball or shot visible in any frame"
+    },
+    {
+      "windowID": "IMG_1766@0023.7",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0038.6",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0104.2",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0223.0",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0245.7",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0393.2",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0518.3",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0609.3",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0710.9",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0804.4",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@0857.5",
+      "clip": "IMG_1766.mov",
+      "label": "notShot",
+      "reason": "empty court in frames 0-1, then the player walks in dribbling/holding the ball in frames 2-3; no release visible in this window"
+    },
+    {
+      "windowID": "IMG_1766@1004.3",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1041.4",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1060.8",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1140.1",
+      "clip": "IMG_1766.mov",
+      "label": "unsure",
+      "reason": "clear pre-shot rise pose in frame 0, but no ball is visible in flight in frames 1-3 (frame 1 shows the player already empty-handed with no ball anywhere) \u2014 can't confirm where the release happened or whether it was toward the rim"
+    },
+    {
+      "windowID": "IMG_1766@1249.4",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1303.1",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1394.0",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1422.8",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1466.5",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1506.1",
+      "clip": "IMG_1766.mov",
+      "label": "notShot",
+      "reason": "player dribbles/gathers the ball throughout (no rise-and-release seen); the ball visible near the rim in frame 1 is almost certainly the tail of a previous shot landing, not a release from this window"
+    },
+    {
+      "windowID": "IMG_1766@1519.4",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1534.9",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    },
+    {
+      "windowID": "IMG_1766@1547.9",
+      "clip": "IMG_1766.mov",
+      "label": "shot"
+    }
+  ]
+}

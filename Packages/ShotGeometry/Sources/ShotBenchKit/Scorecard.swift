@@ -82,6 +82,9 @@ public struct Scorecard: Codable, Sendable {
     public var overall: GroupSummary
     public var perSpot: [GroupSummary]
     public var labelScoring: LabelScoringSummary
+    /// Precision/recall against `docs/footage-2026-09-13/window_labels.json` (shot / notShot / unsure
+    /// hand labels — see `PrecisionRecall.swift`). Always present; `status` says whether it scored.
+    public var windowLabelScoring: WindowLabelScoring
     public var notes: [String]
 }
 
@@ -230,7 +233,8 @@ public enum BenchRunner {
 
     // MARK: - entry point
 
-    public static func run(windows: [CachedWindow], variantName: String, cacheDir: String, labelsPath: String = LabelLoader.defaultPath) -> Scorecard? {
+    public static func run(windows: [CachedWindow], variantName: String, cacheDir: String, labelsPath: String = LabelLoader.defaultPath,
+                           windowLabelsPath: String = WindowLabelLoader.defaultPath) -> Scorecard? {
         guard let variant = Variant.named(variantName) else { return nil }
         var context = VariantContext()
         if variant.needsSessionPooling { context.pooledAzimuthByClip = pooledAzimuthByClip(windows, override: variant.calibrationOverride) }
@@ -264,10 +268,13 @@ public enum BenchRunner {
         }
         if !skipped.isEmpty { notes.append("\(skipped.count) window(s) skipped by this variant — see `skipped`") }
 
+        let windowLabelScoring = WindowLabelScorer.run(scores: scores, skipped: skipped, labelsPath: windowLabelsPath)
+
         let iso = ISO8601DateFormatter()
         return Scorecard(variant: variant.name, variantSummary: variant.summary, cacheDir: cacheDir, generatedAt: iso.string(from: Date()),
                          windows: scores, skipped: skipped, overall: overall, perSpot: perSpot,
                          labelScoring: LabelScoringSummary(sourcePath: labelResult.sourcePath, status: labelResult.status, detail: labelResult.detail, matches: matches),
+                         windowLabelScoring: windowLabelScoring,
                          notes: notes)
     }
 }

@@ -67,6 +67,40 @@ public enum BenchReporting {
             line("|---|---|---|---:|")
             for m in s.labelScoring.matches { line("| \(m.windowID) | \(m.clip) | \(m.labelVideo) | \(fmt(m.errorMs, 1)) |") }
         }
+        line("")
+        line("### Shot labels (precision / recall)")
+        let wl = s.windowLabelScoring
+        if wl.status != "scored" {
+            line("labels not found at `\(wl.sourcePath)` (\(wl.status)" + (wl.detail.map { ": \($0)" } ?? "") + ") — precision/recall not computed.")
+        } else {
+            line("source: `\(wl.sourcePath)`")
+            line("")
+            line("| group | shot (labelled) | shot accepted | recall | accepted | accepted w/ definite label | accepted shot | precision | unsure excluded | no label |")
+            line("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+            func row(_ g: WindowLabelGroupSummary) {
+                line("| \(g.label) | \(g.shotCount) | \(g.shotAccepted) | \(pct(g.recall)) | \(g.acceptedCount) | \(g.acceptedWithDefiniteLabel) | \(g.acceptedShot) | \(pct(g.precision)) | \(g.unsureCount) | \(g.noLabelCount) |")
+            }
+            if let overall = wl.overall { row(overall) }
+            for g in wl.perClip { row(g) }
+            func refusalTable(_ title: String, _ groups: [(String, [RefusalBucket])]) {
+                line("")
+                line("### \(title)")
+                for (label, hist) in groups {
+                    if hist.isEmpty { continue }
+                    line("**\(label)**")
+                    line("| reason | count |")
+                    line("|---|---:|")
+                    for b in hist.sorted(by: { $0.count > $1.count }) { line("| \(b.reason) | \(b.count) |") }
+                    line("")
+                }
+            }
+            if let overall = wl.overall {
+                refusalTable("Refusal reasons among labelled `shot` windows (refused, and it was a shot)",
+                             [("overall", overall.refusalByLabel.shot)] + wl.perClip.map { ($0.label, $0.refusalByLabel.shot) })
+                refusalTable("Refusal reasons among labelled `notShot` windows (refused, and correctly so)",
+                             [("overall", overall.refusalByLabel.notShot)] + wl.perClip.map { ($0.label, $0.refusalByLabel.notShot) })
+            }
+        }
         if !s.notes.isEmpty {
             line("")
             line("### Notes")

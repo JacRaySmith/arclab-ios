@@ -198,3 +198,118 @@ never read alone.
   `gravityUp`/`autoFoundTrace` skip behaviour) and **27 tests, 0 failures** in FormEvalKitTests.
 - `swift run -c release GeometryHarness` → **GATE: PASS**, scenario I still marginal and identical to
   `docs/PHASE1-REPORT.md`; the harness never sets `knownUp`, so it exercises the unchanged code path.
+
+## 8. The missing denominator, filled in: labelling the corpus (2026-09-24, second pass)
+
+§"What the corpus cannot yet tell us" above flagged the real problem with every number in this
+document: acceptance rate has no denominator for "how many windows are actually shots", so a
+refused window could be a good shot the geometry got wrong or correctly-refused debris, and the
+free-throw clip's 0.43 m release-height spread among accepted windows could be contamination or
+could be noise — indistinguishable without labels. This pass adds the labels and answers both
+questions.
+
+### 8.1 How the labels were made
+
+For each of the 98 cached windows, ~4 frames spanning `fileStart`→`fileEnd` were extracted with
+`TrajectoryProbe frame` and tiled into one 2×2 review image (a scratch Swift/AppKit script, not
+checked in — see `docs/footage-2026-09-13/window_labels.json`'s own `note`). An agent (this one)
+looked at all 98 tiled images and labelled each `shot`, `notShot`, or `unsure`, with a one-phrase
+reason for every `notShot` and `unsure`. This is **one person's (one agent's) visual judgement from
+four still frames per window on one night's footage — not authoritative ground truth.** `unsure` is
+a real answer, not a cop-out: those windows are excluded from precision/recall scoring entirely
+(neither numerator nor denominator of either metric), and the count is always printed so the
+exclusion is never silent. The labels live at `docs/footage-2026-09-13/window_labels.json`,
+version-controlled next to `release_labels.json`.
+
+| clip | spot | shot | notShot | unsure | commonest `notShot`/`unsure` reason |
+|---|---|---:|---:|---:|---|
+| `IMG_1764.mov` | elbow | 39 | 3 | 1 | no release visible — empty court, a rebound retrieval, or the player just walking/holding the ball between shots |
+| `IMG_1765.mov` | freeThrow | 28 | 0 | 2 | a pre-shot "rise" pose visible but no ball confirmed in flight in any of the 4 sampled frames |
+| `IMG_1766.mov` | three | 21 | 3 | 1 | empty court / player walking in with no release, or (one window) dribbling throughout with no rise-and-release |
+| **total** | | **88** | **6** | **4** | |
+
+Every `notShot`/`unsure` window's exact reason is in `window_labels.json`. Two shapes of judgement
+call are worth naming plainly (not wrong, but not obvious either): (1) a few `shot` labels are a
+drive-in layup or putback near the rim rather than a standing jumper (`IMG_1765@0101.0`,
+`IMG_1765@0758.2`, `IMG_1764@0899.2`) — a real release toward the ring, but not the shot shape the
+geometry model assumes; (2) `unsure` was used whenever a clear pre-shot "rise" pose wasn't followed
+by a confirmed ball-in-flight frame (`IMG_1765@1075.3`, `IMG_1765@1091.8`, `IMG_1766@1140.1`) —
+plausibly real shots that simply fell between the 4 sampled instants, called `unsure` rather than
+guessed as `shot`.
+
+### 8.2 Precision and recall, per variant, per clip
+
+`ShotBenchKit`'s scorecard (`PrecisionRecall.swift`, `Scorecard.swift`, `Reporting.swift`) now
+reports, whenever `window_labels.json` is found: **recall** (of labelled `shot` windows, the
+fraction accepted — a thrown-away shot is the real failure) and **precision** (of accepted windows
+with a definite label, the fraction labelled `shot` — an accepted `notShot` is a fabricated
+measurement). A window a variant *skips* (never evaluates, e.g. `knownDistance` on an elbow window)
+counts the same as a refusal for recall — the app produced no measurement for it either way. With no
+label file, the scorecard is unchanged except for one line naming the path it looked and didn't
+find (verified by `ShotBenchWindowLabelTests`, including the no-labels and all-`unsure` cases).
+
+Re-running the four variants from §2–§5 over the now-labelled corpus:
+
+| variant | overall recall | overall precision | elbow recall | freeThrow recall | three recall |
+|---|---:|---:|---:|---:|---:|
+| baseline | 43.2% (38/88) | **100.0%** (38/38) | 66.7% (26/39) | 39.3% (11/28) | 4.8% (1/21) |
+| knownDistance | 11.4% (10/88)† | **100.0%** (10/10) | 0.0% (elbow skipped)† | 35.7% (10/28) | 0.0% (0/21) |
+| **gravityUp** | 54.5% (48/88) | **100.0%** (48/48) | 71.8% (28/39) | 35.7% (10/28) | **47.6% (10/21)** |
+| **autoFoundTrace** | 56.8% (50/88) | **100.0%** (50/50) | 71.8% (28/39) | 39.3% (11/28) | **52.4% (11/21)** |
+
+† `knownDistance` structurally cannot measure elbow windows (no fixed shooting distance — see
+`SpotDistanceTable`), so its overall recall is dragged down by 39 shots it never had a chance to
+recall, not by a worse fit; read its elbow row as "not applicable", not "0% capable", and compare it
+to the others only on freeThrow/three.
+
+**Precision is 100% for every variant on every clip that has data, full stop.** Across 98 labelled
+windows and four variants, not one accepted window turned out to be labelled `notShot` — the
+acceptance gates (gravity error, plausibility, fit residual) that the app already runs never once
+mistook a rebound, a pass, or dead time for a shot in this corpus. The failure mode this whole
+corpus exhibits is **entirely recall**: real shots the geometry could have measured but refused,
+concentrated overwhelmingly in `IMG_1766` (threes), where `baseline` recovers 1 shot in 21 and
+`autoFoundTrace` recovers 11. This confirms, with an actual denominator behind it now, exactly what
+§3–§5's acceptance-rate numbers already suggested and what `ShotBench compare`'s McNemar test already
+established statistically — but it had not been possible to say, until now, that the *fixes* aren't
+also quietly admitting junk to buy that gain. They aren't.
+
+### 8.3 The free-throw spread: contamination, or noise?
+
+**28 of the 30 `IMG_1765` (free throw) windows are real shots** (0 `notShot`, 2 `unsure`). This
+alone is informative: the clip is not full of rebounds and passes masquerading as shots — this
+shooter was, in fact, shooting free throws almost continuously.
+
+Of `baseline`'s 12 accepted free-throw windows, 11 are labelled `shot` and 1 (`IMG_1765@1075.3`) is
+`unsure` — **zero are `notShot`.** Recomputing the release-height standard deviation over only the
+11 confirmed-shot accepted windows:
+
+| set | n | release-height SD (m) | mean (m) |
+|---|---:|---:|---:|
+| all `baseline`-accepted free-throw windows | 12 | 0.430 | 2.460 |
+| accepted **and** labelled `shot` only | 11 | **0.447** | 2.444 |
+
+**The spread does not shrink — it widens slightly.** Dropping the one `unsure` window (the only
+window that *could* have been contamination) makes the spread marginally worse, not better. There is
+no contamination to exclude: every other accepted window is a confirmed real free throw, and they
+still disagree on release height by nearly half a metre.
+
+**This is a measurement-quality problem, not a labelling/contamination problem.** The corpus was
+never contaminated with non-shots in a way that explains the spread; the geometry pipeline itself is
+producing release-height estimates for real free throws that vary far more than one shooter at one
+spot should. (`docs/BENCH-RESULTS-2026-09-24.md` §6 already flagged that this pass ran `--no-pose`
+throughout, so release comes from the ball trace alone — a plausible contributor to that
+measurement noise, though not one this labelling pass can itself confirm or rule out; that is a
+question for the pose-based release path, not for the corpus's labels.)
+
+### 8.4 Gates (this sub-pass)
+
+- `swift test -Xswiftc -O` in `Packages/ShotGeometry`: **362 tests, 0 failures** in ShotGeometryTests
+  (339 from §7 + 10 new — `ShotBenchWindowLabelTests`, covering the loader's missing/unreadable/
+  well-formed cases, the recall/precision arithmetic on a mixed synthetic set, the `unsure`-and-
+  no-label exclusion case, the all-`unsure` case, and that a skipped window counts as not-accepted
+  for recall) and **27 tests, 0 failures** in FormEvalKitTests — all green, unchanged from §7.
+- `swift run -c release GeometryHarness` → **GATE: PASS**, unchanged from §7 (this pass touches only
+  `ShotBenchKit`/`ShotBench`, never `ShotGeometry`).
+- Round-trip: `ShotBench run <cache> --variant baseline` from the repo root reproduces §1's exact
+  live numbers (26/43, 12/30, 1/25) with the new "Shot labels" section appended — confirming the
+  label-scoring addition is purely additive to the existing scorecard, as designed.

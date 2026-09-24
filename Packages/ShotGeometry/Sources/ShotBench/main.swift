@@ -13,7 +13,7 @@ import ShotBenchKit
 func usage() -> Never {
     print("""
     usage:
-      ShotBench run <cache-dir> --variant <name> [--json out.json] [--markdown out.md] [--labels path]
+      ShotBench run <cache-dir> --variant <name> [--json out.json] [--markdown out.md] [--labels path] [--window-labels path]
                      variants: \(Variant.all.map(\.name).joined(separator: ", "))
       ShotBench compare <base.json> <cand.json> [--markdown out.md]
     """)
@@ -68,7 +68,8 @@ func runShotBench() {
             for e in loadErrors { print("! \(e)") }
             guard !windows.isEmpty else { print("no windows loaded from \(cacheDir)"); exit(1) }
             let labelsPath = flag("labels") ?? LabelLoader.defaultPath
-            guard let card = BenchRunner.run(windows: windows, variantName: variantName, cacheDir: cacheDir, labelsPath: labelsPath) else {
+            let windowLabelsPath = flag("window-labels") ?? WindowLabelLoader.defaultPath
+            guard let card = BenchRunner.run(windows: windows, variantName: variantName, cacheDir: cacheDir, labelsPath: labelsPath, windowLabelsPath: windowLabelsPath) else {
                 print("could not build a scorecard for variant \"\(variantName)\""); exit(1)
             }
             let md = BenchReporting.markdown(card)
