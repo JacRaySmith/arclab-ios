@@ -20,6 +20,12 @@ public struct WindowScore: Codable, Sendable {
     public var depthPastFrontRim: Double?
     public var sampleCount: Int?
     public var releaseTimeErrorMs: Double?
+    /// The azimuth the analysis actually used, degrees in [0, 360) in the calibration's horizontal
+    /// basis — the clip's pooled value where pooling engaged, this window's own solve otherwise.
+    /// Optional so scorecards written before 2026-09-24 still decode.
+    public var azimuthUsedDegrees: Double?
+    /// `viewAngle` of the solved plane, degrees (0 = perfect side view, 90 = head-on).
+    public var viewAngleDegrees: Double?
 }
 
 public struct SkippedWindow: Codable, Sendable, Error {
@@ -83,6 +89,10 @@ public struct Scorecard: Codable, Sendable {
     public var perSpot: [GroupSummary]
     public var labelScoring: LabelScoringSummary
     public var notes: [String]
+    /// What this variant's azimuth pooling did, per clip — engaged or not, and the numbers behind
+    /// that decision. Nil for a variant that does not pool (and for scorecards written before
+    /// 2026-09-24, which is why it is optional).
+    public var pooling: [PoolDiagnostics]?
 }
 
 public enum BenchRunner {
@@ -114,7 +124,7 @@ public enum BenchRunner {
     /// when reading a `baseline` scorecard for a cache assembled from partial/limited dumps (e.g. a
     /// `--limit 3` slice): pooling may not engage there the way it would on the full clip, and that
     /// is expected, not a bug in the replay.
-    static func pooledAzimuthByClip(_ windows: [CachedWindow], override: @Sendable (_ window: CachedWindow) -> CalibrationOverride = { _ in CalibrationOverride() }) -> [String: Double] {
+    static func legacyPooledAzimuthByClip(_ windows: [CachedWindow], override: @Sendable (_ window: CachedWindow) -> CalibrationOverride = { _ in CalibrationOverride() }) -> [String: Double] {
         var byClip: [String: [CachedWindow]] = [:]
         for w in windows { byClip[w.clip, default: []].append(w) }
         var out: [String: Double] = [:]
@@ -136,6 +146,180 @@ public enum BenchRunner {
             if spread <= (25.0 * Double.pi / 180.0) { out[clip] = mean }
         }
         return out
+    }
+
+    // MARK: - per-shot azimuths and the pooling strategies (2026-09-24 azimuth experiment)
+
+    /// One window's own fixed-gravity azimuth solve under this variant's calibration — the quantity
+    /// every pooling rule pools, and the one the diagnosis dump reports. Independent of acceptance:
+    /// a window whose analysis later fails the gravity gate still has an azimuth, and leaving those
+    /// out of the pool is exactly what the legacy rule does wrong.
+    ///
+    /// `timeRange` restricts the solve to (real-seconds) span — used by iterated pooling to re-solve
+    /// over just the flight window. Falls back to the whole track if the range leaves too few
+    /// samples for a solve, the same rule `ShotAnalyzer` applies to `azimuthTimeRange`.
+    static func perShotAzimuth(_ w: CachedWindow, override: CalibrationOverride = CalibrationOverride(),
+                               timeRange: ClosedRange<Double>? = nil) -> Double? {
+        guard let cal = calibration(for: w, override: override) else { return nil }
+        let all = w.samples.map(\.imageSample).sorted { $0.t < $1.t }
+        let restricted = timeRange.map { r in all.filter { r.contains($0.t) } } ?? all
+        let use = restricted.count >= 8 ? restricted : all
+        return ShotPlaneSolver.solveByFixedGravity(use, calibration: cal, intrinsics: w.intrinsics)?.frame.azimuth
+    }
+
+    /// Analyse a window with a given azimuth fixed, and report the flight window it found, in real
+    /// seconds. Used by iterated pooling to know which samples are actually in flight.
+    static func flightSpan(_ w: CachedWindow, override: CalibrationOverride, fixedAzimuth: Double) -> ClosedRange<Double>? {
+        guard let cal = calibration(for: w, override: override) else { return nil }
+        var o = AnalysisOptions()
+        o.azimuthByFixedGravity = true
+        o.fixedAzimuth = fixedAzimuth
+        if let r = w.releaseTimeOverride { o.windowOptions.releaseTimeOverride = r }
+        guard let a = try? ShotAnalyzer.analyze(track: w.samples.map(\.imageSample), calibration: cal, intrinsics: w.intrinsics, options: o),
+              a.window.endIndex < a.planeSamples.count else { return nil }
+        let lo = a.window.releaseTime, hi = a.planeSamples[a.window.endIndex].t
+        return lo < hi ? lo...hi : nil
+    }
+
+    /// Is this window accepted under its own per-shot solve? (The population the legacy rule and
+    /// `.robustAccepted` pool over.)
+    static func acceptedUnderOwnSolve(_ w: CachedWindow, override: CalibrationOverride) -> Bool {
+        guard let cal = calibration(for: w, override: override) else { return false }
+        var o = AnalysisOptions()
+        o.azimuthByFixedGravity = true
+        if let r = w.releaseTimeOverride { o.windowOptions.releaseTimeOverride = r }
+        guard let a = try? ShotAnalyzer.analyze(track: w.samples.map(\.imageSample), calibration: cal, intrinsics: w.intrinsics, options: o) else { return false }
+        return ShotAcceptance.accepted(a)
+    }
+
+    /// The pooled azimuth per clip under a variant's pooling strategy, plus the diagnostics that
+    /// say why each clip was or was not pooled. `.none` returns nothing and computes nothing.
+    static func pooledAzimuth(_ windows: [CachedWindow], strategy: AzimuthPoolingStrategy,
+                              override: @Sendable (_ window: CachedWindow) -> CalibrationOverride = { _ in CalibrationOverride() })
+        -> (byClip: [String: Double], byWindow: [String: Double], diagnostics: [PoolDiagnostics]) {
+        switch strategy {
+        case .none:
+            return ([:], [:], [])
+
+        case .clusteredRobust(let config, let gapDegrees):
+            var byClipWindows: [String: [CachedWindow]] = [:]
+            for w in windows { byClipWindows[w.clip, default: []].append(w) }
+            var byWindow: [String: Double] = [:]
+            var diags: [PoolDiagnostics] = []
+            for clip in byClipWindows.keys.sorted() {
+                var azimuths: [(id: String, az: Double)] = []
+                for w in byClipWindows[clip]! {
+                    if let az = perShotAzimuth(w, override: override(w)) { azimuths.append((w.windowID, az)) }
+                }
+                let groups = AzimuthPooling.clusters(azimuths.map(\.az), gapDegrees: gapDegrees)
+                if groups.isEmpty {
+                    diags.append(PoolDiagnostics(clip: clip, strategy: strategy.label, inputCount: 0, keptCount: 0, droppedCount: 0,
+                                                 centerDegrees: nil, scaledMADDegrees: nil, maxDeviationDegrees: nil, resultantLength: nil,
+                                                 engaged: false, reason: "no window in this clip produced a per-shot azimuth solve",
+                                                 iterations: nil, iterationShiftsDegrees: nil))
+                    continue
+                }
+                for (i, group) in groups.enumerated() {
+                    guard let pooled = AzimuthPooling.robust(group, clip: clip, strategy: strategy.label + " [cluster \(i + 1) of \(groups.count)]", config: config) else { continue }
+                    var d = pooled.diagnostics
+                    if d.engaged {
+                        // A window joins this cluster when its own solve is inside the cluster's span.
+                        let radius = max(Angle.radians(gapDegrees), (CircularStats.maxDeviation(group, about: pooled.center) ?? 0))
+                        for a in azimuths where CircularStats.distance(a.az, pooled.center) <= radius {
+                            byWindow[a.id] = pooled.center
+                        }
+                    } else {
+                        d.reason = "cluster \(i + 1) of \(groups.count): " + d.reason
+                    }
+                    diags.append(d)
+                }
+            }
+            return ([:], byWindow, diags)
+
+        case .legacyAcceptedMean:
+            let byClip = legacyPooledAzimuthByClip(windows, override: override)
+            var diags: [PoolDiagnostics] = []
+            for clip in Set(windows.map(\.clip)).sorted() {
+                let engaged = byClip[clip] != nil
+                diags.append(PoolDiagnostics(clip: clip, strategy: strategy.label, inputCount: windows.filter { $0.clip == clip }.count,
+                                             keptCount: 0, droppedCount: 0,
+                                             centerDegrees: byClip[clip].map { Angle.degrees(CircularStats.wrapPositive($0)) },
+                                             scaledMADDegrees: nil, maxDeviationDegrees: nil, resultantLength: nil,
+                                             engaged: engaged,
+                                             reason: engaged ? "pooled (legacy rule)" : "fewer than 3 accepted shots, or they disagreed by more than 25°",
+                                             iterations: nil, iterationShiftsDegrees: nil))
+            }
+            return (byClip, [:], diags)
+
+        case .robustAll(let config), .robustAccepted(let config):
+            var acceptedOnly = false
+            if case .robustAccepted = strategy { acceptedOnly = true }
+            var byClipWindows: [String: [CachedWindow]] = [:]
+            for w in windows { byClipWindows[w.clip, default: []].append(w) }
+            var out: [String: Double] = [:]
+            var diags: [PoolDiagnostics] = []
+            for clip in byClipWindows.keys.sorted() {
+                var values: [Double] = []
+                for w in byClipWindows[clip]! {
+                    let ov = override(w)
+                    if acceptedOnly, !acceptedUnderOwnSolve(w, override: ov) { continue }
+                    if let az = perShotAzimuth(w, override: ov) { values.append(az) }
+                }
+                guard let pooled = AzimuthPooling.robust(values, clip: clip, strategy: strategy.label, config: config) else {
+                    diags.append(PoolDiagnostics(clip: clip, strategy: strategy.label, inputCount: values.count, keptCount: 0, droppedCount: 0,
+                                                 centerDegrees: nil, scaledMADDegrees: nil, maxDeviationDegrees: nil, resultantLength: nil,
+                                                 engaged: false, reason: "no window in this clip produced a per-shot azimuth solve",
+                                                 iterations: nil, iterationShiftsDegrees: nil))
+                    continue
+                }
+                if pooled.diagnostics.engaged { out[clip] = pooled.center }
+                diags.append(pooled.diagnostics)
+            }
+            return (out, [:], diags)
+
+        case .iteratedRobust(let config, let iterations, let toleranceDegrees):
+            var byClipWindows: [String: [CachedWindow]] = [:]
+            for w in windows { byClipWindows[w.clip, default: []].append(w) }
+            var out: [String: Double] = [:]
+            var diags: [PoolDiagnostics] = []
+            for clip in byClipWindows.keys.sorted() {
+                let ws = byClipWindows[clip]!
+                // Round 0: the whole-track per-shot solves, pooled robustly.
+                var azimuths: [String: Double] = [:]
+                for w in ws { if let az = perShotAzimuth(w, override: override(w)) { azimuths[w.windowID] = az } }
+                guard var pooled = AzimuthPooling.robust(Array(azimuths.values), clip: clip, strategy: strategy.label, config: config) else {
+                    diags.append(PoolDiagnostics(clip: clip, strategy: strategy.label, inputCount: 0, keptCount: 0, droppedCount: 0,
+                                                 centerDegrees: nil, scaledMADDegrees: nil, maxDeviationDegrees: nil, resultantLength: nil,
+                                                 engaged: false, reason: "no window in this clip produced a per-shot azimuth solve",
+                                                 iterations: 0, iterationShiftsDegrees: nil))
+                    continue
+                }
+                var shifts: [Double] = []
+                var rounds = 0
+                while pooled.diagnostics.engaged && rounds < iterations {
+                    rounds += 1
+                    // Re-solve every window's azimuth over just the flight window the current pooled
+                    // azimuth implies; a window whose analysis or re-solve fails keeps its previous value.
+                    for w in ws {
+                        let ov = override(w)
+                        guard let span = flightSpan(w, override: ov, fixedAzimuth: pooled.center),
+                              let az = perShotAzimuth(w, override: ov, timeRange: span) else { continue }
+                        azimuths[w.windowID] = az
+                    }
+                    guard let next = AzimuthPooling.robust(Array(azimuths.values), clip: clip, strategy: strategy.label, config: config) else { break }
+                    let shift = Angle.degrees(CircularStats.distance(next.center, pooled.center))
+                    shifts.append(shift)
+                    pooled = next
+                    if shift < toleranceDegrees { break }
+                }
+                var d = pooled.diagnostics
+                d.iterations = rounds
+                d.iterationShiftsDegrees = shifts
+                if d.engaged { out[clip] = pooled.center }
+                diags.append(d)
+            }
+            return (out, [:], diags)
+        }
     }
 
     // MARK: - per-window evaluation
@@ -165,13 +349,16 @@ public enum BenchRunner {
                                         releaseHeight: a.metrics.release?.height, releaseSpeed: a.metrics.release?.speed,
                                         releaseAngleDegrees: a.metrics.release?.angleDegrees, releaseUnavailableReason: a.metrics.releaseUnavailableReason,
                                         entryAngleDegrees: a.metrics.entryAngleDegrees, entryAngleUnavailableReason: a.metrics.entryAngleUnavailableReason,
-                                        depthPastFrontRim: a.metrics.depthPastFrontRim, sampleCount: a.confidence.nInliers, releaseTimeErrorMs: errMs)
+                                        depthPastFrontRim: a.metrics.depthPastFrontRim, sampleCount: a.confidence.nInliers, releaseTimeErrorMs: errMs,
+                                        azimuthUsedDegrees: Angle.degrees(CircularStats.wrapPositive(a.azimuth.frame.azimuth)),
+                                        viewAngleDegrees: Angle.degrees(a.confidence.viewAngle))
                 return (.success(score), match)
             } catch {
                 let score = WindowScore(windowID: window.windowID, clip: window.clip, spot: window.spot, accepted: false, refusalReason: "\(error)",
                                         gError: nil, rmsPx: nil, releaseHeight: nil, releaseSpeed: nil, releaseAngleDegrees: nil,
                                         releaseUnavailableReason: nil, entryAngleDegrees: nil, entryAngleUnavailableReason: nil,
-                                        depthPastFrontRim: nil, sampleCount: nil, releaseTimeErrorMs: nil)
+                                        depthPastFrontRim: nil, sampleCount: nil, releaseTimeErrorMs: nil,
+                                        azimuthUsedDegrees: nil, viewAngleDegrees: nil)
                 return (.success(score), nil)
             }
         }
@@ -233,7 +420,9 @@ public enum BenchRunner {
     public static func run(windows: [CachedWindow], variantName: String, cacheDir: String, labelsPath: String = LabelLoader.defaultPath) -> Scorecard? {
         guard let variant = Variant.named(variantName) else { return nil }
         var context = VariantContext()
-        if variant.needsSessionPooling { context.pooledAzimuthByClip = pooledAzimuthByClip(windows, override: variant.calibrationOverride) }
+        let pooling = pooledAzimuth(windows, strategy: variant.pooling, override: variant.calibrationOverride)
+        context.pooledAzimuthByClip = pooling.byClip
+        context.pooledAzimuthByWindowID = pooling.byWindow
         let labelResult = LabelLoader.load(path: labelsPath)
 
         var scores: [WindowScore] = []
@@ -257,10 +446,16 @@ public enum BenchRunner {
         }
 
         var notes: [String] = []
-        if variant.needsSessionPooling {
+        if variant.pooling.isEnabled {
             let pooled = context.pooledAzimuthByClip
-            notes.append(pooled.isEmpty ? "session-pooled azimuth did not engage for any clip in this cache (fewer than 3 accepted shots, or they disagreed by > 25°); every window fell back to its own fixed-gravity solve"
-                                        : "session-pooled azimuth applied for: " + pooled.keys.sorted().joined(separator: ", "))
+            notes.append("azimuth pooling rule: " + variant.pooling.label)
+            if !context.pooledAzimuthByWindowID.isEmpty {
+                notes.append("pooled azimuth applied per window (clustered): \(context.pooledAzimuthByWindowID.count) of \(windows.count) windows took a cluster centre; the rest kept their own solve")
+            }
+            notes.append(pooled.isEmpty && context.pooledAzimuthByWindowID.isEmpty ? "pooled azimuth did not engage for any clip in this cache; every window fell back to its own fixed-gravity solve"
+                                        : "pooled azimuth applied for: " + pooled.keys.sorted().map { clip in
+                                            String(format: "%@ (%.1f°)", clip, Angle.degrees(CircularStats.wrapPositive(pooled[clip]!))) }.joined(separator: ", "))
+            for d in pooling.diagnostics where !d.engaged { notes.append("not pooled — \(d.clip): \(d.reason)") }
         }
         if !skipped.isEmpty { notes.append("\(skipped.count) window(s) skipped by this variant — see `skipped`") }
 
@@ -268,6 +463,6 @@ public enum BenchRunner {
         return Scorecard(variant: variant.name, variantSummary: variant.summary, cacheDir: cacheDir, generatedAt: iso.string(from: Date()),
                          windows: scores, skipped: skipped, overall: overall, perSpot: perSpot,
                          labelScoring: LabelScoringSummary(sourcePath: labelResult.sourcePath, status: labelResult.status, detail: labelResult.detail, matches: matches),
-                         notes: notes)
+                         notes: notes, pooling: pooling.diagnostics.isEmpty ? nil : pooling.diagnostics)
     }
 }

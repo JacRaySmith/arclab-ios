@@ -16,6 +16,8 @@ func usage() -> Never {
       ShotBench run <cache-dir> --variant <name> [--json out.json] [--markdown out.md] [--labels path]
                      variants: \(Variant.all.map(\.name).joined(separator: ", "))
       ShotBench compare <base.json> <cand.json> [--markdown out.md]
+      ShotBench azimuth <cache-dir> --variant <name> [--json out.json]
+                     per-window azimuth solve + the robust per-clip pool (diagnosis, no verdict)
     """)
     exit(2)
 }
@@ -74,6 +76,31 @@ func runShotBench() {
             let md = BenchReporting.markdown(card)
             print(md)
             writeOutputs(json: card, markdownText: md, jsonPath: flag("json"), markdownPath: flag("markdown"))
+        } catch {
+            print("! \(error)")
+            exit(1)
+        }
+
+    case "azimuth":
+        guard let cacheDir = args.first, !cacheDir.hasPrefix("--"), let variantName = flag("variant") else { usage() }
+        guard Variant.named(variantName) != nil else {
+            print("unknown variant \"\(variantName)\"; known: \(Variant.all.map(\.name).joined(separator: ", "))")
+            exit(2)
+        }
+        do {
+            let (windows, loadErrors) = try CacheLoader.loadAll(dir: URL(fileURLWithPath: cacheDir))
+            for e in loadErrors { print("! \(e)") }
+            guard !windows.isEmpty else { print("no windows loaded from \(cacheDir)"); exit(1) }
+            guard let diag = AzimuthDiagnoser.run(windows: windows, variantName: variantName, cacheDir: cacheDir) else {
+                print("could not build an azimuth diagnosis for variant \"\(variantName)\""); exit(1)
+            }
+            for p in diag.pools {
+                print(String(format: "%@  n=%d kept=%d dropped=%d  centre %.2f°  1.4826·MAD %.2f°  max dev %.2f°  R̄ %.3f  %@",
+                             p.clip, p.inputCount, p.keptCount, p.droppedCount, p.centerDegrees ?? .nan,
+                             p.scaledMADDegrees ?? .nan, p.maxDeviationDegrees ?? .nan, p.resultantLength ?? .nan,
+                             p.engaged ? "would pool" : "would NOT pool — " + p.reason))
+            }
+            writeOutputs(json: diag, markdownText: "", jsonPath: flag("json"), markdownPath: nil)
         } catch {
             print("! \(error)")
             exit(1)

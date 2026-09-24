@@ -140,6 +140,38 @@ experiment is adding one `Variant` entry, not editing the runner:
   this needs no access to the gitignored footage directory at replay time). Session-pooled like
   `baseline`. Skips a clip with no bundled auto-found trace.
 
+The **azimuth-pooling experiments** (2026-09-24, `docs/BENCH-RESULTS-azimuth-2026-09-24.md`) all sit
+on `autoFoundTrace`'s calibration and differ from it only in `Variant.pooling`, so they are read
+against `autoFoundTrace`, not against `baseline`: **`autoFoundNoPool`** (no pooling at all — the
+control), **`autoFoundPooledMedian`** / **`autoFoundPooledMedianAccepted`** (robust circular median
+over all / accepted windows, MAD outlier rule), **`autoFoundPooledGated`** (pooled only when the
+surviving azimuths' robust spread 1.4826·MAD ≤ 10°), **`autoFoundPooledIterated`** (re-solve each
+window over the flight window the pooled azimuth implies, then re-pool), **`autoFoundPooledClustered`**
+/ **`autoFoundPooledClusteredTight`** (cluster the clip's azimuths by circular gap and pool within
+each cluster), and **`autoFoundAzimuthOffset5`** — a deliberately wrong sensitivity probe, never a
+candidate, which offsets the pooled azimuth by 5° so the bench can measure d(release height)/d(azimuth).
+The estimators are in `ShotBenchKit/CircularStats.swift` (circular mean/median/MAD/clustering, unit
+tested at the wrap point); the pooling rules are `AzimuthPoolingStrategy` in `Variants.swift`, and a
+scorecard now carries a `pooling` section saying, per clip, whether pooling engaged and the numbers
+behind that decision.
+
+## Diagnosing the azimuth, before any pooling decision
+
+```
+ShotBench azimuth <cache-dir> --variant autoFoundTrace --json azimuth.json
+```
+
+Solves every window's azimuth on its own (`ShotPlaneSolver.solveByFixedGravity` over the whole
+track) under that variant's calibration and dumps it per window — including for windows whose later
+analysis throws, which a scorecard cannot show. Each row carries the solve's residual, ambiguity
+ratio and σ, the window's own accept/refuse verdict, its release height/distance, and two
+gravity-independent numbers: the ball diameter the window's own plane implies (`d_px · z / f_x`,
+median along the track) and how much that varies along the track. A ball does not change size, so
+those two separate "this plane is right" from "this fit happens to reproduce g" — the fixed-gravity
+solve chooses the plane that makes g come out at 9.81, so a small g-error is not by itself evidence
+that the plane is right. It prints the robust per-clip pool (centre, 1.4826·MAD, max deviation,
+outliers dropped) and whether it would engage.
+
 `gravityUp` and `autoFoundTrace` are the first two variants that need more than `AnalysisOptions`: a
 `Variant` can also supply a `CalibrationOverride` (a replacement rim boundary, a `knownUp`, or both) —
 `BenchRunner.calibration(for:override:)` applies it before `RimCalibrator.calibrate` runs, and
@@ -229,6 +261,10 @@ tests of the pooling logic in isolation. See `docs/BENCH-RESULTS-2026-09-24.md` 
 `gravityUp` and `autoFoundTrace` (both from `docs/research/three-point-acceptance-2026-09-24.md`)
 against `baseline`, `fixedGravityAzimuth`, and `knownDistance`, over the full 2026-09-13 corpus, per
 clip and overall. `docs/EXPERIMENTS.md` has the one-line-per-variant ledger.
+`docs/BENCH-RESULTS-azimuth-2026-09-24.md` has the azimuth-pooling experiment: the per-clip azimuth
+diagnosis (one clip of that corpus turns out to hold two shooting positions, not one), the six
+pooling variants, and the measurement that rules the "azimuth noise causes the 0.4 m release-height
+spread" hypothesis out.
 
 ## Gates that can silently pass (2026-09-24)
 
