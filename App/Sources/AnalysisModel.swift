@@ -116,15 +116,36 @@ final class AnalysisModel {
                                            measuredUp: measuredCameraUp,
                                            measuredUnavailableReason: measuredUpUnavailableReason)
         rimUpAgreement = agreement
+
+        // Gravity arbitrates between the shooter's active points and a remembered auto-found
+        // candidate, when both exist and differ. This is a different question from `agreement` above,
+        // which is only ever about whatever is currently active — see RimGravity.arbitrate.
+        var autoFoundAgreement: RimUpAgreement?
+        var arbitration: RimGravity.Arbitration?
+        var pointsToCalibrate = rimPoints
+        if let autoFoundRimPoints, autoFoundRimPoints != rimPoints, autoFoundRimPoints.count >= 6 {
+            let a = RimGravity.compare(boundaryPoints: autoFoundRimPoints, intrinsics: k,
+                                       measuredUp: measuredCameraUp,
+                                       measuredUnavailableReason: measuredUpUnavailableReason)
+            autoFoundAgreement = a
+            let decision = RimGravity.arbitrate(tracedDisagreement: agreement.disagreement,
+                                                autoFoundDisagreement: a.disagreement)
+            arbitration = decision
+            if decision.winner == .autoFound, !rimArbitrationOverriddenByShooter {
+                pointsToCalibrate = autoFoundRimPoints
+            }
+        }
+        rimArbitration = arbitration
+
         do {
             var options = RimCalibrationOptions()
             // The shooter's trace is the default and is never overridden without their say-so; the
             // measured direction is used only after they have chosen it.
             if rimUpSolvedWithGravity, let up = measuredCameraUp { options.knownUp = up }
-            let c = try RimCalibrator.calibrate(boundaryPoints: rimPoints, intrinsics: k, options: options)
+            let c = try RimCalibrator.calibrate(boundaryPoints: pointsToCalibrate, intrinsics: k, options: options)
             calibration = c
             calibrationError = nil
-            logRimCalibrated(c, agreement: agreement)
+            logRimCalibrated(c, agreement: agreement, autoFoundAgreement: autoFoundAgreement, arbitration: arbitration)
         } catch {
             calibration = nil
             calibrationError = "\(error)"
@@ -142,7 +163,19 @@ final class AnalysisModel {
         rimUpAgreement = nil
         rimUpSolvedWithGravity = false
         rimTrustAnswered = false
+        rimArbitration = nil
+        rimArbitrationOverriddenByShooter = false
         invalidateAnalysis()
+    }
+
+    /// A truly new clip has no rim-finder history at all — unlike `clearRim()` (called whenever the
+    /// shooter only wants to retrace the *same* clip), this drops the remembered auto-found candidate
+    /// too, so an old clip's finder result can never be arbitrated against a new clip's trace.
+    private func forgetRimFinderHistory() {
+        autoFoundRimPoints = nil
+        rimFinderHasRun = false
+        rimArbitration = nil
+        rimArbitrationOverriddenByShooter = false
     }
 
     // MARK: Which way is down
@@ -166,10 +199,31 @@ final class AnalysisModel {
     /// stops asking. Their trace is never discarded or overridden until they answer.
     private(set) var rimTrustAnswered = false
 
+    /// The boundary points `RimFinder` most recently proposed for this clip, kept even after the
+    /// shooter starts hand-tracing over them — gravity needs both candidates in hand to arbitrate
+    /// between them (`RimGravity.arbitrate`). Nil until `findRimAutomatically()` succeeds once for
+    /// this clip; cleared only by a fresh clip or a fresh find, never by `clearRim()` alone.
+    private(set) var autoFoundRimPoints: [SIMD2<Double>]?
+    /// True once `findRimAutomatically()` has completed at least once for the current clip, whether
+    /// or not it found anything — logged so the fleet's data says whether the finder was even tried.
+    private(set) var rimFinderHasRun = false
+    /// What gravity decided between the shooter's active points and `autoFoundRimPoints` the last
+    /// time `calibrateRim()` ran. Nil when there was nothing to arbitrate: no second candidate, or no
+    /// measured gravity for this clip.
+    private(set) var rimArbitration: RimGravity.Arbitration?
+    /// True once the shooter has explicitly chosen to keep their own trace after gravity favoured the
+    /// auto-found candidate over it. Persists across recalibration so the choice sticks; a fresh clip
+    /// or a fresh find gives gravity another look.
+    private(set) var rimArbitrationOverriddenByShooter = false
+
     /// True when the trace and the phone disagree by more than `RimUpAgreement.tolerance` and the
-    /// shooter has not yet said what to do about it.
+    /// shooter has not yet said what to do about it. Never true when gravity has already resolved the
+    /// disagreement by picking the auto-found candidate (`rimArbitrationHasSomethingToSay` covers
+    /// that case instead) — the shooter is never asked the same question twice.
     var rimNeedsGravityDecision: Bool {
-        (rimUpAgreement?.disagrees ?? false) && !rimTrustAnswered && calibration != nil
+        guard (rimUpAgreement?.disagrees ?? false), !rimTrustAnswered, calibration != nil else { return false }
+        if rimArbitration?.usedRimTheShooterDidNotDraw == true, !rimArbitrationOverriddenByShooter { return false }
+        return true
     }
 
     /// The shooter chose the phone's measured direction. Re-solves; their points are untouched.
@@ -198,6 +252,11 @@ final class AnalysisModel {
     /// record and for anywhere the session's numbers are shown. Never "unknown".
     var rimUpProvenance: String {
         guard calibration != nil else { return "no rim has been calibrated yet" }
+        if rimArbitration?.usedRimTheShooterDidNotDraw == true, !rimArbitrationOverriddenByShooter {
+            let gap = rimArbitration?.tracedDisagreement.map { String(format: "%.1f°", ShotGeometry.Angle.degrees($0)) }
+            return gap.map { "Measured from the ring ArcLab found automatically; your traced ring was \($0) from the phone's own sense of down." }
+                ?? "Measured from the ring ArcLab found automatically."
+        }
         let a = rimUpAgreement
         let gap = a?.disagreement.map { String(format: "%.1f°", ShotGeometry.Angle.degrees($0)) }
         if rimUpSolvedWithGravity {
@@ -230,11 +289,13 @@ final class AnalysisModel {
     /// first, so an empty row is never laid out.
     var rimTrustHasSomethingToSay: Bool {
         if rimTrustHeadline != nil, !rimTrustAnswered { return true }
+        if rimArbitrationHasSomethingToSay { return true }
         if !rimTrustWarnings.isEmpty { return true }
         return rimTrustAnswered && calibration != nil
     }
 
-    private func logRimCalibrated(_ c: RimCalibration, agreement: RimUpAgreement) {
+    private func logRimCalibrated(_ c: RimCalibration, agreement: RimUpAgreement,
+                                  autoFoundAgreement: RimUpAgreement?, arbitration: RimGravity.Arbitration?) {
         func deg(_ r: Double?) -> Double? { r.map(ShotGeometry.Angle.degrees) }
         // Logged on every calibration, warned about or not: this is how the next sessions answer
         // whether bad traces are what refuses two thirds of the three-point shots.
@@ -251,6 +312,18 @@ final class AnalysisModel {
             "upSource": rimUpSolvedWithGravity ? "gravity" : "trace",
             "implausibleRoll": abs(c.roll) > RimGravity.implausibleTripodRoll,
             "clipSource": clip?.source == .recordedInApp ? "recordedInApp" : "imported",
+            // Gravity arbitration: the auto-found candidate's own disagreement, whether the finder
+            // ran and produced one at all, the margin used, and which candidate actually reached
+            // `RimCalibrator.calibrate` — logged every time, shown to the shooter or not, so the
+            // fleet's next sessions can measure whether hand traces are the cause of the three-point
+            // acceptance rate (docs/research/three-point-acceptance-2026-09-24.md).
+            "rimFinderRan": rimFinderHasRun,
+            "autoFoundCandidateAvailable": autoFoundRimPoints != nil,
+            "autoFoundDiffersFromActiveTrace": autoFoundRimPoints != nil && autoFoundRimPoints != rimPoints,
+            "autoFoundUpDisagreementDeg": deg(autoFoundAgreement?.disagreement),
+            "arbitrationMarginDeg": ShotGeometry.Angle.degrees(RimGravity.arbitrationMargin),
+            "arbitrationWinner": arbitration?.winner.rawValue,
+            "arbitrationOverriddenByShooter": rimArbitrationOverriddenByShooter,
         ])
     }
 
@@ -270,14 +343,20 @@ final class AnalysisModel {
     }
 
     /// The headline of the disagreement card, or nil when there is no disagreement to report.
+    ///
+    /// Never fires when gravity has already resolved the disagreement itself by switching to the
+    /// auto-found candidate (`rimArbitrationHeadline` covers that instead) — the two cards would
+    /// otherwise say the same thing about the same trace in two different voices.
     var rimTrustHeadline: String? {
         guard rimUpAgreement?.disagrees == true else { return nil }
+        if rimArbitrationHasSomethingToSay { return nil }
         return "Your trace and the phone disagree about which way is down"
     }
 
     /// What is wrong and what it costs, in the shooter's words rather than in geometry.
     var rimTrustMessage: String? {
         guard let a = rimUpAgreement, a.disagrees, let gap = a.disagreement else { return nil }
+        if rimArbitrationHasSomethingToSay { return nil }
         let three = a.heightErrorMetres(atDistance: RimUpAgreement.threePointReleaseDistance) ?? 0
         let free = a.heightErrorMetres(atDistance: RimUpAgreement.freeThrowReleaseDistance) ?? 0
         return String(format: """
@@ -287,6 +366,51 @@ final class AnalysisModel {
 
         Tracing the ring again is the surer fix. Otherwise ArcLab can measure this clip using the phone's own sense of down and keep the size and position your trace gave.
         """, ShotGeometry.Angle.degrees(gap), three, free)
+    }
+
+    // MARK: Gravity choosing between a hand trace and an auto-found trace
+
+    /// True when this calibration is using boundary points the shooter did not draw themselves —
+    /// gravity picked the auto-found candidate over their active trace — and they have not yet said
+    /// to keep their own trace instead. False the instant either side stops being true: the trace
+    /// wins the tie, or the shooter has already answered.
+    var rimArbitrationHasSomethingToSay: Bool {
+        rimArbitration?.usedRimTheShooterDidNotDraw == true && !rimArbitrationOverriddenByShooter
+    }
+
+    /// The headline for the "gravity used a rim you didn't draw" card, or nil when there is nothing
+    /// to report — including the good-trace case, where `RimTrustCard` says nothing at all.
+    var rimArbitrationHeadline: String? {
+        guard rimArbitrationHasSomethingToSay else { return nil }
+        return "This shot uses the ring ArcLab found on its own, not the one you traced"
+    }
+
+    /// One short line saying why, plus the cost — reusing `RimTrustCard`'s voice for the same
+    /// underlying question ("which way is down") rather than inventing a second one.
+    var rimArbitrationMessage: String? {
+        guard rimArbitrationHasSomethingToSay,
+              let tracedDeg = rimArbitration?.tracedDisagreement.map(ShotGeometry.Angle.degrees),
+              let autoDeg = rimArbitration?.autoFoundDisagreement.map(ShotGeometry.Angle.degrees) else { return nil }
+        return String(format: "Your traced ring was %.0f° from the phone's own sense of down; the ring ArcLab found on its own was only %.0f°, so this shot uses that one instead.",
+                     tracedDeg, autoDeg)
+    }
+
+    /// The margin explanation, always shown under the arbitration card. States plainly, in both code
+    /// and here, that the number is a convention rather than a measured result — CLAUDE.md rule 1's
+    /// "never fabricate a number" cuts the other way too: never dress up a convention as a finding.
+    var rimArbitrationMarginCaption: String {
+        String(format: "ArcLab only makes this swap when the two disagree by more than %.0f° — a convention chosen to avoid switching over a close call, not a measured finding.",
+              ShotGeometry.Angle.degrees(RimGravity.arbitrationMargin))
+    }
+
+    /// The shooter looked at the swap and wants their own trace back. The trace was never touched —
+    /// this only changes which candidate `calibrateRim()` picks.
+    func useTracedRimOverArbitration() {
+        rimArbitrationOverriddenByShooter = true
+        ActivityLog.shared.event("rim.arbitrationChoice", ["choice": "trace",
+                                                            "tracedDisagreementDeg": rimArbitration?.tracedDisagreement.map(ShotGeometry.Angle.degrees),
+                                                            "autoFoundDisagreementDeg": rimArbitration?.autoFoundDisagreement.map(ShotGeometry.Angle.degrees)])
+        calibrateRim()
     }
 
     /// What the automatic finder said about its proposal (confidence, warnings) or why it found nothing.
@@ -301,6 +425,8 @@ final class AnalysisModel {
         guard let clip, !rimFinding else { return }
         rimFinding = true
         defer { rimFinding = false }
+        rimFinderHasRun = true
+        rimArbitrationOverriddenByShooter = false   // a fresh find deserves a fresh look from gravity
         let duration = fileDuration
         let times = (frameTimes ?? [3, 15, 45, 90, 180].map { min($0, max(0, duration - 0.5)) })
             .reduce(into: [Double]()) { if !$0.contains($1) { $0.append($1) } }
@@ -326,6 +452,7 @@ final class AnalysisModel {
         let seconds = Date().timeIntervalSince(t0)
         if let b = best {
             rimPoints = b.result.boundaryPoints
+            autoFoundRimPoints = b.result.boundaryPoints
             rimFrameTime = b.time
             let conf = b.result.confidence
             var note = String(format: "Ring found on the frame at %.1f s (confidence %.2f, %d of the ring's boundary measured, residual %.1f px).",
@@ -338,6 +465,9 @@ final class AnalysisModel {
                                                   "warnings": b.result.warnings.joined(separator: " | "), "tried": times.count, "seconds": seconds])
         } else {
             rimFindNote = "The ring was not found automatically (" + (failures.first ?? "no frame examined") + "). Mark it by hand: tap 6 or more points around the inside of the ring."
+            // This attempt found nothing to arbitrate with; an earlier candidate (if any) is stale for
+            // this frame too, so it is dropped rather than left to be compared against a new trace.
+            autoFoundRimPoints = nil
             ActivityLog.shared.event("rim.notFound", ["reasons": failures.joined(separator: " | "), "tried": times.count, "seconds": seconds])
         }
     }
@@ -393,6 +523,7 @@ final class AnalysisModel {
         clip = nil; probe = nil; run = nil; progressText = nil
         probeRetryNote = nil
         clearRim()
+        forgetRimFinderHistory()
         adoptGravity(from: nil, noRecordReason: "this clip came from Photos, so nothing recorded which way was down while it was filmed — only a clip filmed in ArcLab carries that")
         let log = ActivityLog.shared
         Task {
@@ -445,6 +576,7 @@ final class AnalysisModel {
         clip = ImportedClip(url: url, source: .recordedInApp)
         probe = nil; run = nil; progressText = nil
         clearRim()
+        forgetRimFinderHistory()
         adoptGravity(from: try? RecordedClip.load(url: url),
                      noRecordReason: "this clip has no ArcLab recording record beside it, so nothing says which way was down while it was filmed")
         hfovDegrees = hfov
@@ -472,6 +604,7 @@ final class AnalysisModel {
         clip = ImportedClip(url: recorded.url, source: .recordedInApp)
         probe = nil; run = nil; progressText = nil
         clearRim()
+        forgetRimFinderHistory()
         adoptGravity(from: recorded, noRecordReason: "")
         hfovDegrees = recorded.videoFieldOfViewDegrees
         let url = recorded.url
