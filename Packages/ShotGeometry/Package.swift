@@ -35,7 +35,12 @@ let package = Package(
         // under a named variant, and compares two replays with a paired statistical test.
         // `ShotBenchKit` holds the statistics and scoring so they can be unit-tested; `ShotBench`
         // is the CLI. Foundation + simd + ShotGeometry only, like FormEvalKit/FormEval.
-        .target(name: "ShotBenchKit", dependencies: ["ShotGeometry"]),
+        // `Resources/rim_*_found.json`: the auto-found rim traces (RimFinder, 2026-09-14), copied
+        // byte-for-byte from `footage/2026-09-13/` so the `autoFoundTrace` variant needs no access to
+        // that gitignored, multi-GB footage directory at replay time — the same "no video" property
+        // every other variant has. See `Variants.swift`'s `AutoFoundRimTrace`.
+        .target(name: "ShotBenchKit", dependencies: ["ShotGeometry"],
+                resources: [.copy("Resources/rim_1764_found.json"), .copy("Resources/rim_1765_found.json"), .copy("Resources/rim_1766_found.json")]),
         .executableTarget(name: "ShotBench", dependencies: ["ShotGeometry", "ShotBenchKit"]),
         .testTarget(name: "ShotGeometryTests", dependencies: ["ShotGeometry", "ShotBenchKit"]),
         .testTarget(name: "FormEvalKitTests", dependencies: ["FormEvalKit", "ShotGeometry"]),

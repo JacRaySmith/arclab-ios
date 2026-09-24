@@ -131,6 +131,20 @@ experiment is adding one `Variant` entry, not editing the runner:
   guesses**, a window with no spot label or a spot the table doesn't know — `elbow` most of all: the
   elbow is a lateral position on the floor, not a fixed distance from the rim, so there is no single
   number to put there.
+- **`gravityUp`** — sets `RimCalibrationOptions.knownUp` per clip from `MeasuredVertical`, a table of
+  each clip's camera roll/pitch measured from its own vertical vanishing point (independent of the
+  rim trace). Session-pooled like `baseline`. Skips a clip with no recorded vertical. See
+  `docs/BENCH-RESULTS-2026-09-24.md` for what this changes on the 2026-09-13 corpus.
+- **`autoFoundTrace`** — recalibrates from the auto-found rim trace (`RimFinder`, 2026-09-14) instead
+  of the cached hand trace, via a bundled `ShotBenchKit` resource (`Resources/rim_*_found.json`, so
+  this needs no access to the gitignored footage directory at replay time). Session-pooled like
+  `baseline`. Skips a clip with no bundled auto-found trace.
+
+`gravityUp` and `autoFoundTrace` are the first two variants that need more than `AnalysisOptions`: a
+`Variant` can also supply a `CalibrationOverride` (a replacement rim boundary, a `knownUp`, or both) —
+`BenchRunner.calibration(for:override:)` applies it before `RimCalibrator.calibrate` runs, and
+`pooledAzimuthByClip` takes the same override so pass 1 (pooling) and pass 2 (the final per-window
+analysis) always see the same calibration. See `CalibrationOverride` in `Variants.swift`.
 
 Every scorecard reports, overall and **per spot**: windows analysed, accepted count and rate, a
 histogram of refusal reasons (coarse categories — gravity gate, plausibility gate, residual gate,
@@ -183,8 +197,11 @@ swift run -c release ShotBench compare baseline.json candidate.json --markdown c
 
 Add one `Variant` to `Variants.swift`: a `name`, a `summary` (shown in every scorecard), and
 `makeOptions: (CachedWindow, VariantContext) -> VariantResult`, returning `.options(AnalysisOptions)`
-or `.skip("reason")`. Append it to `Variant.all`. That is the whole integration — `ShotBench run`
-and the aggregation/statistics do not change.
+or `.skip("reason")`. If the experiment needs a different `RimCalibration` (a `knownUp`, or a
+different rim boundary entirely) rather than just different `AnalysisOptions`, also supply
+`calibrationOverride: (CachedWindow) -> CalibrationOverride` — see `gravityUp`/`autoFoundTrace` for
+examples. Append the variant to `Variant.all`. That is the whole integration — `ShotBench run` and
+the aggregation/statistics do not change.
 
 ## The round-trip check (why this pipeline can be trusted)
 
@@ -192,9 +209,23 @@ Verified 2026-09-24 on a 3-window slice of `IMG_1766.mov` (`--spot three --no-po
 live `session --dump-windows` table and a `ShotBench run --variant baseline` replay of the resulting
 cache agree **exactly**, window by window — same accept/reject verdict, same thrown-error text for
 the window that failed to fit, same `gError` (including the deliberate `.infinity` on two windows),
-same `rmsPx`, release height/speed/angle, entry angle, depth, and sample count. See the final report
-for the full table. Session-pooling did not engage on this slice (0 of 3 windows accepted in pass 1,
-same live and replayed), so this check exercises the per-shot fixed-gravity path; the pooled path is
-exercised by `pooledAzimuthByClip`'s unit-level logic mirroring `Probe.swift` line for line, but has
-not yet been checked against a live multi-shot pooled run (that needs a full clip scan, which was
-out of scope for this pass — see `docs/EXPERIMENTS.md` for what to run next).
+same `rmsPx`, release height/speed/angle, entry angle, depth, and sample count. Session-pooling did
+not engage on this slice (0 of 3 windows accepted in pass 1, same live and replayed), so this first
+check exercised only the per-shot fixed-gravity path.
+
+**Extended 2026-09-24 to the full corpus (all three clips, 98 windows, no slicing).** The live
+`accepted N of M` line for each clip and a `ShotBench run --variant baseline` replay of the resulting
+cache agree exactly on every clip: `IMG_1764` 26/43, `IMG_1765` 12/30, `IMG_1766` 1/25. This closes
+the gap the note above used to flag: `IMG_1764` is a real multi-shot capture where the live
+`session` command's pass-1 pooling *does* engage (23 accepted shots → view angle 3.3° from side, max
+deviation 3.0°), and the replay's `pooledAzimuthByClip` reproduces that decision exactly (the
+scorecard's `notes` read "session-pooled azimuth applied for: IMG_1764.mov", nothing else) — so the
+pooled path, not just the per-shot path, is now verified against a live run, not only against unit
+tests of the pooling logic in isolation. See `docs/BENCH-RESULTS-2026-09-24.md` §1 for the full table.
+
+## Results
+
+`docs/BENCH-RESULTS-2026-09-24.md` has the first real comparisons run through this pipeline:
+`gravityUp` and `autoFoundTrace` (both from `docs/research/three-point-acceptance-2026-09-24.md`)
+against `baseline`, `fixedGravityAzimuth`, and `knownDistance`, over the full 2026-09-13 corpus, per
+clip and overall. `docs/EXPERIMENTS.md` has the one-line-per-variant ledger.
