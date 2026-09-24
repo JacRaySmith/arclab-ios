@@ -229,3 +229,39 @@ tests of the pooling logic in isolation. See `docs/BENCH-RESULTS-2026-09-24.md` 
 `gravityUp` and `autoFoundTrace` (both from `docs/research/three-point-acceptance-2026-09-24.md`)
 against `baseline`, `fixedGravityAzimuth`, and `knownDistance`, over the full 2026-09-13 corpus, per
 clip and overall. `docs/EXPERIMENTS.md` has the one-line-per-variant ledger.
+
+## Gates that can silently pass (2026-09-24)
+
+A measurement loop is only as good as its gates, and one of ours was not measuring anything.
+
+The shared `build-app.sh` used by agents did **not** run `xcodegen generate` before building.
+`App/ArcLab.xcodeproj` is git-ignored and generated from `App/project.yml`, so any source file
+added since the last generate was never compiled: the build could print `** BUILD SUCCEEDED **`
+while the new code did not exist in the target at all. It also built `Debug`, which is not what
+ships and has been measured on device at roughly a hundred times slower per analysis window.
+
+Fixed: the script regenerates the project first and treats a `xcodegen` failure as fatal, refusing
+to build a stale project rather than reporting a pass. It builds `Release` by default.
+
+Signing is now separate from the gate. As of 2026-09-24 Xcode reports "No Accounts", so a signed
+build fails and nothing can be installed on the phone until an Apple ID is signed in again. The
+correctness gate therefore builds unsigned (`CODE_SIGNING_ALLOWED=NO`); pass `--sign` when the
+build is meant for the device.
+
+**The lesson for this pipeline:** a gate that cannot fail is worse than no gate, because it is
+believed. When a result depends on a gate, check that the gate would have caught its own absence.
+
+## What the corpus cannot yet tell us: the missing denominator
+
+Acceptance rate is *accepted windows ÷ windows found*, and nothing in the corpus says how many of
+those windows are real shots by this shooter. A refused window may be a good shot the geometry got
+wrong, or a rebound, a warm-up, another player, or nothing at all — and those are opposite
+outcomes. Until the corpus is labelled with the real shots, acceptance rate can only be compared
+between variants on the same windows (which is what the paired McNemar test does, and why it is the
+right test), never read as an absolute score of how well the app works.
+
+A supporting signal that something is off: on the free-throw clip the accepted windows' release
+height has a standard deviation of 0.43 m. One shooter at one spot does not vary their release
+height by 43 cm, so either the accepted set contains windows that are not this shooter's free
+throws, or the measurement is much noisier than the acceptance gate implies. Both are worth
+knowing and they are distinguishable only with labels.
