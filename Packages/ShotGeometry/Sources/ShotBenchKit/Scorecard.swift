@@ -89,10 +89,12 @@ public enum BenchRunner {
 
     // MARK: - calibration
 
-    static func calibration(for window: CachedWindow) -> RimCalibration? {
+    static func calibration(for window: CachedWindow, override: CalibrationOverride = CalibrationOverride()) -> RimCalibration? {
         var options = RimCalibrationOptions()
         options.rimDiameter = window.rimDiameterUsed
-        return try? RimCalibrator.calibrate(boundaryPoints: window.rimBoundaryPoints, intrinsics: window.intrinsics, options: options)
+        if let up = override.knownUp { options.knownUp = up }
+        let points = override.rimBoundaryPoints ?? window.rimBoundaryPoints
+        return try? RimCalibrator.calibrate(boundaryPoints: points, intrinsics: window.intrinsics, options: options)
     }
 
     // MARK: - session-pooled azimuth (baseline only)
@@ -101,6 +103,10 @@ public enum BenchRunner {
     /// clip, analyse every window with the per-shot fixed-gravity solve, collect the azimuths of the
     /// ones that pass acceptance, and pool them by circular mean when ≥3 agree within 25°.
     ///
+    /// `override` lets a variant that needs session pooling (`gravityUp`, `autoFoundTrace`, in
+    /// addition to `baseline`) pool with *its own* calibration — pass 1 must see the same rim
+    /// boundary/knownUp the per-window pass 2 will use, or pooling would silently mix calibrations.
+    ///
     /// This only ever sees the windows present *in this cache directory*. A live `session` run pools
     /// over every shot in one continuous capture; a cache can hold windows from several dump runs, so
     /// this is the closest a window-independent replay tool can get to that behaviour without
@@ -108,14 +114,14 @@ public enum BenchRunner {
     /// when reading a `baseline` scorecard for a cache assembled from partial/limited dumps (e.g. a
     /// `--limit 3` slice): pooling may not engage there the way it would on the full clip, and that
     /// is expected, not a bug in the replay.
-    static func pooledAzimuthByClip(_ windows: [CachedWindow]) -> [String: Double] {
+    static func pooledAzimuthByClip(_ windows: [CachedWindow], override: @Sendable (_ window: CachedWindow) -> CalibrationOverride = { _ in CalibrationOverride() }) -> [String: Double] {
         var byClip: [String: [CachedWindow]] = [:]
         for w in windows { byClip[w.clip, default: []].append(w) }
         var out: [String: Double] = [:]
         for (clip, ws) in byClip {
             var azimuths: [Double] = []
             for w in ws {
-                guard let cal = calibration(for: w) else { continue }
+                guard let cal = calibration(for: w, override: override(w)) else { continue }
                 var o = AnalysisOptions()
                 o.azimuthByFixedGravity = true
                 if let r = w.releaseTimeOverride { o.windowOptions.releaseTimeOverride = r }
@@ -140,9 +146,9 @@ public enum BenchRunner {
         case .skip(let reason):
             return (.failure(SkippedWindow(windowID: window.windowID, clip: window.clip, spot: window.spot, reason: reason)), nil)
         case .options(let o):
-            guard let cal = calibration(for: window) else {
+            guard let cal = calibration(for: window, override: variant.calibrationOverride(window)) else {
                 return (.failure(SkippedWindow(windowID: window.windowID, clip: window.clip, spot: window.spot,
-                                               reason: "rim calibration failed for this window's cached boundary points")), nil)
+                                               reason: "rim calibration failed under this variant's calibration (boundary override or knownUp)")), nil)
             }
             do {
                 let a = try ShotAnalyzer.analyze(track: window.samples.map(\.imageSample), calibration: cal, intrinsics: window.intrinsics, options: o)
@@ -227,7 +233,7 @@ public enum BenchRunner {
     public static func run(windows: [CachedWindow], variantName: String, cacheDir: String, labelsPath: String = LabelLoader.defaultPath) -> Scorecard? {
         guard let variant = Variant.named(variantName) else { return nil }
         var context = VariantContext()
-        if variant.needsSessionPooling { context.pooledAzimuthByClip = pooledAzimuthByClip(windows) }
+        if variant.needsSessionPooling { context.pooledAzimuthByClip = pooledAzimuthByClip(windows, override: variant.calibrationOverride) }
         let labelResult = LabelLoader.load(path: labelsPath)
 
         var scores: [WindowScore] = []
