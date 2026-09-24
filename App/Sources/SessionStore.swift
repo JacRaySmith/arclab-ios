@@ -201,6 +201,11 @@ struct SavedSession: Codable, Identifiable, Sendable {
     /// `AnalysisModel.clipFingerprint` of the video this came from, so picking the same clip again is
     /// recognised. Optional: sessions saved before this build carry none and are never matched.
     var clipFingerprint: String?
+    /// Added 2026-09-24. Which "up" the rim was solved with — the shooter's own trace, or the
+    /// direction the phone measured while the clip was filmed — and how far apart the two were.
+    /// Every number in this session is read along that direction, so its provenance is part of the
+    /// record. Optional: sessions saved before this build carry none and say so rather than guess.
+    var rimUpProvenance: String?
 
     var isFormClip: Bool { formClip == true }
 
@@ -372,9 +377,11 @@ final class SessionStore {
                                  rimAxisRatio: session.rimAxisRatio, viewClass: session.dominantViewClass?.rawValue,
                                  windows: session.shots.count, failed: failed, shots: shots)
         saved.clipFingerprint = clipFingerprint
+        saved.rimUpProvenance = session.rimUpProvenance
         sessions.insert(saved, at: 0)
         persist()
-        ActivityLog.shared.event("session.saved", ["spot": spot.rawValue, "shots": shots.count, "accepted": saved.accepted, "note": note, "clip": clipName])
+        ActivityLog.shared.event("session.saved", ["spot": spot.rawValue, "shots": shots.count, "accepted": saved.accepted, "note": note, "clip": clipName,
+                                                   "rimUp": session.rimUpProvenance])
         return saved
     }
 

@@ -70,6 +70,10 @@ final class SessionModel {
     private(set) var intrinsics: CameraIntrinsics?
     private(set) var calibration: RimCalibration?
     private(set) var rimPoints: [SIMD2<Double>] = []
+    /// Which of the two possible "up" directions this session's rim was solved with — the shooter's
+    /// trace, or the direction the phone measured while the clip was filmed — in one line, so a
+    /// session read back months later never has to guess (`AnalysisModel.rimUpProvenance`).
+    private(set) var rimUpProvenance: String?
 
     // MARK: Scan
 
@@ -209,6 +213,7 @@ final class SessionModel {
         intrinsics = k
         hfovProvenance = clip.source == .recordedInApp ? "sidecar" : "assumed"
         calibration = cal
+        rimUpProvenance = model.rimUpProvenance
         rimPoints = model.rimPoints
         shots = []
         scan = nil
@@ -309,6 +314,7 @@ final class SessionModel {
         timeScale = model.timeScale
         intrinsics = k
         calibration = cal
+        rimUpProvenance = model.rimUpProvenance
         rimPoints = model.rimPoints
         hfovProvenance = clip.source == .recordedInApp ? "sidecar" : "assumed"
         scan = nil
@@ -381,6 +387,7 @@ final class SessionModel {
     func reanalyse(model: AnalysisModel, note: String) {
         guard let cal = model.calibration, let k = model.intrinsics, !isBusy else { return }
         calibration = cal
+        rimUpProvenance = model.rimUpProvenance
         intrinsics = k
         timeScale = model.timeScale
         lensNote = note

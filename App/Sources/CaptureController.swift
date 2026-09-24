@@ -624,6 +624,15 @@ final class CaptureController {
     /// The rotation the preview connection is currently showing, degrees. 0/180 = the picture is the
     /// sensor's landscape frame; 90/270 = it has been turned upright and is taller than it is wide.
     private(set) var previewRotationDegrees: CGFloat = 0
+    /// The rotation the *movie* connection was last told to apply, degrees
+    /// (`videoRotationAngleForHorizonLevelCapture`). Kept because the gravity measured while filming
+    /// means nothing without knowing which way the picture was turned when it was written.
+    private(set) var captureRotationDegrees: CGFloat = 0
+    /// The capture rotation as it stood when the current recording started, and whether it has moved
+    /// since. A phone turned over mid-clip has no single frame to express gravity in, and that is a
+    /// reason to withhold the measurement, not to pick one of the two.
+    private var rotationAtRecordingStart: CGFloat?
+    private var rotationChangedWhileRecording = false
 
     /// Called on the main actor once a clip is on disk with its sidecar written.
     var onRecorded: ((RecordedClip) -> Void)?
@@ -675,6 +684,9 @@ final class CaptureController {
         }
         engine?.start()
         observeThermalState()
+        // Warm the motion sensors up with the camera: device motion takes a moment to settle, and
+        // the first sample must not be the one that is still converging.
+        GravitySampler.shared.start()
         #endif
     }
 
@@ -692,6 +704,7 @@ final class CaptureController {
         engine?.teardown()
         engine = nil
         isRunning = false
+        GravitySampler.shared.stop()
     }
 
     private static func request(_ media: AVMediaType) async -> Permission {
@@ -768,6 +781,11 @@ final class CaptureController {
         case .recordingStarted:
             recordingStart = Date()
             status = .recording
+            // From here until the file is written, every tick adds a gravity sample. This is the
+            // only moment the phone is definitely pointing where the clip was filmed from.
+            rotationAtRecordingStart = captureRotationDegrees
+            rotationChangedWhileRecording = false
+            GravitySampler.shared.beginCollecting()
             startTicking()
         case .recordingFinished(let url, let config, let focus, let exposure, let error):
             finishRecording(url: url, config: config, focusLocked: focus, exposureLocked: exposure, error: error)
@@ -813,7 +831,12 @@ final class CaptureController {
             connection.videoRotationAngle = previewAngle
         }
         previewRotationDegrees = previewAngle
-        engine?.setCaptureRotationAngle(coordinator.videoRotationAngleForHorizonLevelCapture)
+        let captureAngle = coordinator.videoRotationAngleForHorizonLevelCapture
+        if let atStart = rotationAtRecordingStart, abs(captureAngle - atStart) > 0.5 {
+            rotationChangedWhileRecording = true
+        }
+        captureRotationDegrees = captureAngle
+        engine?.setCaptureRotationAngle(captureAngle)
         // A rotation changes where the picture is without changing the view's bounds, so `layoutSubviews`
         // never fires for it. This is the only thing that tells the overlay the frame moved.
         refreshPreviewRect()
@@ -889,6 +912,7 @@ final class CaptureController {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self, let start = self.recordingStart else { return }
                 self.elapsed = Date().timeIntervalSince(start)
+                GravitySampler.shared.sample()
             }
         }
     }
@@ -898,6 +922,14 @@ final class CaptureController {
         tickTask?.cancel()
         tickTask = nil
         recordingStart = nil
+
+        // Close the gravity collection before anything can fail, so a discarded clip does not leave
+        // samples running into the next one.
+        let gravity = GravitySampler.shared.finishCollecting()
+        let rotationAtStart = rotationAtRecordingStart
+        let rotationMoved = rotationChangedWhileRecording
+        rotationAtRecordingStart = nil
+        rotationChangedWhileRecording = false
 
         if let error {
             status = .failed("The recording failed: \(error)")
@@ -928,6 +960,16 @@ final class CaptureController {
                     nominal, average))
             }
 
+            // Which way was down while this clip was filmed. A phone that was turned over mid-clip
+            // has no one answer, so the measurement is dropped with the reason rather than averaged
+            // across two orientations.
+            var gravityMeasurement = gravity.measurement
+            var gravityReason = gravity.unavailableReason
+            if rotationMoved {
+                gravityMeasurement = nil
+                gravityReason = "the phone was turned over while it was filming, so this clip has no single direction of down"
+            }
+
             let clip = RecordedClip(
                 id: id,
                 movieFileName: url.lastPathComponent,
@@ -941,7 +983,22 @@ final class CaptureController {
                 videoCodec: config.codec,
                 focusLocked: focusLocked,
                 exposureLocked: exposureLocked,
-                warnings: clipWarnings)
+                warnings: clipWarnings,
+                gravityDevice: gravityMeasurement,
+                gravityUnavailableReason: gravityReason,
+                captureRotationDegrees: rotationAtStart.map(Double.init),
+                storedTransformRotationDegrees: measured.transformRotationDegrees)
+
+            ActivityLog.shared.event("capture.gravity", [
+                "measured": gravityMeasurement != nil,
+                "reason": gravityReason,
+                "samples": gravityMeasurement?.samples,
+                "spreadDeg": gravityMeasurement.map { ($0.spreadDegrees * 100).rounded() / 100 },
+                "captureRotationDeg": rotationAtStart.map(Double.init),
+                "transformRotationDeg": measured.transformRotationDegrees,
+                "sensorToStoredDeg": clip.sensorToStoredRotationDegrees,
+                "cameraUpUnavailable": clip.measuredUpUnavailableReason,
+            ])
 
             await MainActor.run { [weak self] in
                 guard let self else { return }

@@ -24,6 +24,8 @@
 	<string>ArcLab uses the camera to record shot clips for analysis. Nothing leaves the phone.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ArcLab records the audio with your clip so your spoken "make" or "miss" after each shot is kept with the video. Nothing leaves the phone.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>ArcLab reads the phone's tilt while it films so it knows which way is down, and can tell you when the ring you traced disagrees with it. Nothing leaves the phone.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ArcLab reads the shot clips you pick so it can measure the ball's flight. Nothing leaves the phone.</string>
 	<key>UIBackgroundModes</key>

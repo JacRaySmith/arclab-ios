@@ -110,19 +110,26 @@ final class AnalysisModel {
             calibrationError = "no clip has been probed yet, so the frame size is unknown"
             return
         }
+        // Whichever way the rim is solved, the comparison is made against the *free* solve, so the
+        // number the shooter and the log see means the same thing in both cases.
+        let agreement = RimGravity.compare(boundaryPoints: rimPoints, intrinsics: k,
+                                           measuredUp: measuredCameraUp,
+                                           measuredUnavailableReason: measuredUpUnavailableReason)
+        rimUpAgreement = agreement
         do {
-            let options = RimCalibrationOptions()
-            calibration = try RimCalibrator.calibrate(boundaryPoints: rimPoints, intrinsics: k, options: options)
+            var options = RimCalibrationOptions()
+            // The shooter's trace is the default and is never overridden without their say-so; the
+            // measured direction is used only after they have chosen it.
+            if rimUpSolvedWithGravity, let up = measuredCameraUp { options.knownUp = up }
+            let c = try RimCalibrator.calibrate(boundaryPoints: rimPoints, intrinsics: k, options: options)
+            calibration = c
             calibrationError = nil
-            if let c = calibration {
-                ActivityLog.shared.event("rim.calibrated", ["points": rimPoints.count, "distance": c.distanceToRim, "axisRatio": c.ellipse.axisRatio,
-                                                            "residualPx": c.ellipseResidualPx, "warnings": c.warnings.joined(separator: " | "),
-                                                            "frameTime": rimFrameTime, "hfov": hfovDegrees])
-            }
+            logRimCalibrated(c, agreement: agreement)
         } catch {
             calibration = nil
             calibrationError = "\(error)"
-            ActivityLog.shared.event("rim.failed", ["points": rimPoints.count, "error": "\(error)"])
+            ActivityLog.shared.event("rim.failed", ["points": rimPoints.count, "error": "\(error)",
+                                                    "upSource": rimUpSolvedWithGravity ? "gravity" : "trace"])
         }
         invalidateAnalysis()
     }
@@ -132,7 +139,154 @@ final class AnalysisModel {
         calibration = nil
         calibrationError = nil
         rimFindNote = nil
+        rimUpAgreement = nil
+        rimUpSolvedWithGravity = false
+        rimTrustAnswered = false
         invalidateAnalysis()
+    }
+
+    // MARK: Which way is down
+
+    /// Up (away from the floor) in *this clip's* camera frame, as the phone's own sensors measured
+    /// it while the clip was being filmed — the thing `RimCalibrationOptions.knownUp` wants.
+    ///
+    /// It comes from the recording, not from the moment the trace is made: the trace happens
+    /// afterwards, with the phone in the shooter's hand, and gravity then says which way *the hand*
+    /// is pointing, which is nothing to do with how the camera stood on its tripod. A clip that came
+    /// from Photos was filmed by something that recorded no such thing, so it has none.
+    private(set) var measuredCameraUp: SIMD3<Double>?
+    /// Why `measuredCameraUp` is nil — always a sentence, never a silent default (CLAUDE.md rule 1).
+    private(set) var measuredUpUnavailableReason: String?
+    /// What the trace and the phone say about each other, refreshed by every `calibrateRim()`.
+    private(set) var rimUpAgreement: RimUpAgreement?
+    /// True once the shooter has chosen to solve the rim with the measured direction instead of
+    /// their own trace. Only they can set it.
+    private(set) var rimUpSolvedWithGravity = false
+    /// True once the shooter has answered a large disagreement one way or the other, so the warning
+    /// stops asking. Their trace is never discarded or overridden until they answer.
+    private(set) var rimTrustAnswered = false
+
+    /// True when the trace and the phone disagree by more than `RimUpAgreement.tolerance` and the
+    /// shooter has not yet said what to do about it.
+    var rimNeedsGravityDecision: Bool {
+        (rimUpAgreement?.disagrees ?? false) && !rimTrustAnswered && calibration != nil
+    }
+
+    /// The shooter chose the phone's measured direction. Re-solves; their points are untouched.
+    func useMeasuredUpForRim() {
+        guard measuredCameraUp != nil else { return }
+        rimUpSolvedWithGravity = true
+        rimTrustAnswered = true
+        ActivityLog.shared.event("rim.upChoice", ["choice": "gravity",
+                                                  "disagreementDeg": rimUpAgreement?.disagreement.map(ShotGeometry.Angle.degrees)])
+        calibrateRim()
+    }
+
+    /// The shooter looked at the warning and kept their trace. Nothing is re-solved except to put
+    /// the trace's own normal back if the measured one had been chosen before.
+    func keepTracedUpForRim() {
+        rimTrustAnswered = true
+        ActivityLog.shared.event("rim.upChoice", ["choice": "trace",
+                                                  "disagreementDeg": rimUpAgreement?.disagreement.map(ShotGeometry.Angle.degrees)])
+        if rimUpSolvedWithGravity {
+            rimUpSolvedWithGravity = false
+            calibrateRim()
+        }
+    }
+
+    /// One line saying which of the two the current calibration was solved with, for the session
+    /// record and for anywhere the session's numbers are shown. Never "unknown".
+    var rimUpProvenance: String {
+        guard calibration != nil else { return "no rim has been calibrated yet" }
+        let a = rimUpAgreement
+        let gap = a?.disagreement.map { String(format: "%.1f°", ShotGeometry.Angle.degrees($0)) }
+        if rimUpSolvedWithGravity {
+            return gap.map { "Measured with the phone's own sense of down; the traced ring was \($0) away from it." }
+                ?? "Measured with the phone's own sense of down."
+        }
+        if let gap, a?.disagrees == true {
+            return "Measured from the ring as traced, which is \(gap) from the phone's own sense of down — shots far from the ring may read low."
+        }
+        if let gap {
+            return "Measured from the ring as traced; it agrees with the phone's own sense of down to \(gap)."
+        }
+        let why = measuredUpUnavailableReason ?? a?.measuredUnavailableReason
+            ?? "nothing recorded which way was down while this clip was filmed"
+        return "Measured from the ring as traced; \(why), so nothing independent checked it."
+    }
+
+    /// Takes the measured direction from a clip recorded by the app, or the reason there is none.
+    /// `noRecordReason` is used when there is no ArcLab recording behind this clip at all, and must
+    /// say *why* there is none — the two cases read very differently to a shooter.
+    private func adoptGravity(from recorded: RecordedClip?, noRecordReason: String) {
+        measuredCameraUp = recorded?.measuredCameraUp
+        measuredUpUnavailableReason = recorded.map { $0.measuredUpUnavailableReason } ?? noRecordReason
+        rimUpSolvedWithGravity = false
+        rimTrustAnswered = false
+        rimUpAgreement = nil
+    }
+
+    /// True when `RimTrustCard` has anything at all to show. Screens built out of list rows ask
+    /// first, so an empty row is never laid out.
+    var rimTrustHasSomethingToSay: Bool {
+        if rimTrustHeadline != nil, !rimTrustAnswered { return true }
+        if !rimTrustWarnings.isEmpty { return true }
+        return rimTrustAnswered && calibration != nil
+    }
+
+    private func logRimCalibrated(_ c: RimCalibration, agreement: RimUpAgreement) {
+        func deg(_ r: Double?) -> Double? { r.map(ShotGeometry.Angle.degrees) }
+        // Logged on every calibration, warned about or not: this is how the next sessions answer
+        // whether bad traces are what refuses two thirds of the three-point shots.
+        ActivityLog.shared.event("rim.calibrated", [
+            "points": rimPoints.count, "distance": c.distanceToRim, "axisRatio": c.ellipse.axisRatio,
+            "residualPx": c.ellipseResidualPx, "warnings": c.warnings.joined(separator: " | "),
+            "frameTime": rimFrameTime, "hfov": hfovDegrees,
+            "tracedRollDeg": deg(agreement.tracedRoll), "tracedPitchDeg": deg(agreement.tracedPitch),
+            "tracedUnavailable": agreement.tracedUnavailableReason,
+            "gravityRollDeg": deg(agreement.measuredRoll), "gravityPitchDeg": deg(agreement.measuredPitch),
+            "upDisagreementDeg": deg(agreement.disagreement),
+            "motionData": agreement.measuredUp != nil,
+            "motionUnavailable": agreement.measuredUnavailableReason,
+            "upSource": rimUpSolvedWithGravity ? "gravity" : "trace",
+            "implausibleRoll": abs(c.roll) > RimGravity.implausibleTripodRoll,
+            "clipSource": clip?.source == .recordedInApp ? "recordedInApp" : "imported",
+        ])
+    }
+
+    // MARK: What the shooter is told
+
+    /// The plain-language warnings about the calibration that `RimCalibrator` cannot make, because
+    /// they need either a sensor or a convention. Empty when there is nothing to say.
+    var rimTrustWarnings: [String] {
+        guard let c = calibration else { return [] }
+        var out: [String] = []
+        if abs(c.roll) > RimGravity.implausibleTripodRoll, !rimUpSolvedWithGravity {
+            out.append(String(format:
+                "This trace says the phone was rolled %.0f° over while it filmed. A phone on a tripod normally stands within a few degrees of level, so that is usually a sign the trace has caught something that is not the ring — the backboard bracket, or a loop of net. Nothing was measured to fix the %.0f° line: it is a convention chosen because tripods stand near level, not evidence that your trace is wrong.",
+                abs(ShotGeometry.Angle.degrees(c.roll)), ShotGeometry.Angle.degrees(RimGravity.implausibleTripodRoll)))
+        }
+        return out
+    }
+
+    /// The headline of the disagreement card, or nil when there is no disagreement to report.
+    var rimTrustHeadline: String? {
+        guard rimUpAgreement?.disagrees == true else { return nil }
+        return "Your trace and the phone disagree about which way is down"
+    }
+
+    /// What is wrong and what it costs, in the shooter's words rather than in geometry.
+    var rimTrustMessage: String? {
+        guard let a = rimUpAgreement, a.disagrees, let gap = a.disagreement else { return nil }
+        let three = a.heightErrorMetres(atDistance: RimUpAgreement.threePointReleaseDistance) ?? 0
+        let free = a.heightErrorMetres(atDistance: RimUpAgreement.freeThrowReleaseDistance) ?? 0
+        return String(format: """
+        The ring you traced is tilted %.0f° away from the direction the phone itself says is down. Both cannot be right, and it is nearly always the trace: one tap that lands on the backboard bracket or on a loop of net tips the ring over without looking wrong on screen.
+
+        Right at the ring this costs nothing — which is why the ring still looks right — and the cost grows with every step you take back. A shot from the three-point line would have its release height measured about %.1f m out, a free throw about %.1f m, and shots that far out are thrown away as impossible.
+
+        Tracing the ring again is the surer fix. Otherwise ArcLab can measure this clip using the phone's own sense of down and keep the size and position your trace gave.
+        """, ShotGeometry.Angle.degrees(gap), three, free)
     }
 
     /// What the automatic finder said about its proposal (confidence, warnings) or why it found nothing.
@@ -239,6 +393,7 @@ final class AnalysisModel {
         clip = nil; probe = nil; run = nil; progressText = nil
         probeRetryNote = nil
         clearRim()
+        adoptGravity(from: nil, noRecordReason: "this clip came from Photos, so nothing recorded which way was down while it was filmed — only a clip filmed in ArcLab carries that")
         let log = ActivityLog.shared
         Task {
             do {
@@ -290,6 +445,8 @@ final class AnalysisModel {
         clip = ImportedClip(url: url, source: .recordedInApp)
         probe = nil; run = nil; progressText = nil
         clearRim()
+        adoptGravity(from: try? RecordedClip.load(url: url),
+                     noRecordReason: "this clip has no ArcLab recording record beside it, so nothing says which way was down while it was filmed")
         hfovDegrees = hfov
         Task {
             do {
@@ -315,6 +472,7 @@ final class AnalysisModel {
         clip = ImportedClip(url: recorded.url, source: .recordedInApp)
         probe = nil; run = nil; progressText = nil
         clearRim()
+        adoptGravity(from: recorded, noRecordReason: "")
         hfovDegrees = recorded.videoFieldOfViewDegrees
         let url = recorded.url
         Task {

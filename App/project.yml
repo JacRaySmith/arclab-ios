@@ -51,6 +51,10 @@ targets:
         # The in-app recorder keeps the audio track on purpose: the filming protocol asks the shooter to
         # say "make" or "miss" after every shot, and that audio is the ground-truth log.
         NSMicrophoneUsageDescription: ArcLab records the audio with your clip so your spoken "make" or "miss" after each shot is kept with the video. Nothing leaves the phone.
+        # Device motion while filming: gravity is the only independent check on the rim trace, and a
+        # trace tilted a few degrees reads every long shot's release height low (docs/research/
+        # three-point-acceptance-2026-09-24.md). Read only while the recorder is on the screen.
+        NSMotionUsageDescription: ArcLab reads the phone's tilt while it films so it knows which way is down, and can tell you when the ring you traced disagrees with it. Nothing leaves the phone.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.arclab.app

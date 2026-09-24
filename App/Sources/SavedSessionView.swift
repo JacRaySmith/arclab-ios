@@ -266,6 +266,13 @@ struct SavedSessionView: View {
                 LabeledContent("Windows", value: "\(s.windows) tried, \(s.failed) failed to measure")
                 LabeledContent("Clip", value: s.clipName)
                 LabeledContent("Lens", value: String(format: "%.1f° horizontal", s.hfovDegrees))
+                // Every height and distance in this session was read along one direction. Which one
+                // is part of the record, not a detail: a session solved from a tilted trace reads
+                // low at range and nothing else on this screen would say so.
+                if !s.isFormClip {
+                    Text(s.rimUpProvenance ?? "This session was saved before ArcLab recorded which way the rim was solved, so its provenance is unknown.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if s.isFormClip {
                     Text("A form clip: no rim was in frame, so release speed, release angle, entry angle, depth at the rim and make-or-miss are not measured in this session and it never joins the shot-session pool.")
                         .font(.caption).foregroundStyle(.secondary)

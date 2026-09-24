@@ -191,6 +191,11 @@ struct RimMarkingView: View {
                 Text(err).font(.footnote).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        if model.calibration != nil, model.rimTrustHasSomethingToSay {
+            // Which way is down, and what to do when the trace and the phone disagree. Above the
+            // numbers on purpose: it decides what those numbers mean.
+            RimTrustCard(model: model, retrace: { model.clearRim() })
+        }
         if let cal = model.calibration {
             GroupBox("Rim calibration") {
                 VStack(alignment: .leading, spacing: 4) {
@@ -201,6 +206,16 @@ struct RimMarkingView: View {
                     LabeledContent("Pose ambiguity", value: String(format: "%.1f°", cal.ambiguityAngle * 180 / .pi))
                     LabeledContent("Rim diameter used", value: String(format: "%.4f m", cal.rimDiameterUsed))
                     LabeledContent("Camera pitch / roll", value: String(format: "%.1f° / %.1f°", cal.pitch * 180 / .pi, cal.roll * 180 / .pi))
+                    if let a = model.rimUpAgreement {
+                        if let gap = a.disagreement {
+                            LabeledContent("Trace vs. the phone's down", value: String(format: "%.1f°", ShotGeometry.Angle.degrees(gap)))
+                        } else {
+                            LabeledContent("Trace vs. the phone's down", value: "not checked")
+                            Text(a.measuredUnavailableReason ?? "no measured direction for this clip")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(model.rimUpProvenance).font(.caption2).foregroundStyle(.secondary)
                     if cal.warnings.isEmpty {
                         Label("no warnings", systemImage: "checkmark.seal").font(.footnote).foregroundStyle(.green)
                     } else {

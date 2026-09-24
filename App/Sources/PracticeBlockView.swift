@@ -83,6 +83,11 @@ struct PracticeBlockView: View {
                 startScanIfReady()
             }
         }
+        // The scan waits while the trace and the phone disagree about which way is down; this is
+        // what releases it once the shooter has answered, whichever way they answered.
+        .onChange(of: model.rimNeedsGravityDecision) { _, waiting in
+            if !waiting { startScanIfReady() }
+        }
         .onChange(of: session.scanning) { _, scanning in
             if !scanning, !session.shots.isEmpty, !session.analysing { session.analyseAll() }
         }
@@ -203,6 +208,8 @@ struct PracticeBlockView: View {
                 NavigationLink { RimMarkingView(model: model) } label: {
                     Label("Mark the ring by hand", systemImage: "circle.dashed")
                 }
+            } else if model.rimNeedsGravityDecision {
+                RimTrustCard(model: model)
             } else if session.scanning {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: min(max(session.scanProgress, 0), 1))
@@ -449,7 +456,10 @@ struct PracticeBlockView: View {
     }
 
     private func startScanIfReady() {
+        // A rim whose trace disagrees with the phone about which way is down waits for the shooter
+        // to answer. Measuring first would mean measuring a block we already know reads low at range.
         guard model.calibration != nil, model.clip != nil, session.shots.isEmpty,
+              !model.rimNeedsGravityDecision,
               !session.isBusy, !scanStarted else { return }
         scanStarted = true
         session.startScan(model: model)

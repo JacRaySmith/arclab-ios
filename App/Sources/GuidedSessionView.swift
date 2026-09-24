@@ -383,7 +383,13 @@ struct GuidedSessionView: View {
                         .background(.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
                         .foregroundStyle(.orange)
                 }
-                if !rimConfirmed {
+                // Which way is down. While the trace and the phone disagree this is the only way
+                // forward, because "looks right" is exactly what a 15°-off trace does.
+                if model.rimTrustHasSomethingToSay {
+                    RimTrustCard(model: model)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                }
+                if !rimConfirmed, !model.rimNeedsGravityDecision {
                     Button { rimConfirmed = true } label: { Label("Looks right", systemImage: "checkmark") }
                         .buttonStyle(.borderedProminent)
                 }

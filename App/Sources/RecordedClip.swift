@@ -1,5 +1,7 @@
 import AVFoundation
 import Foundation
+import ShotGeometry
+import simd
 
 /// One clip recorded by the app itself, plus everything the analysis would otherwise have to be told by
 /// hand: the true frame rate and the lens's horizontal field of view.
@@ -60,6 +62,63 @@ struct RecordedClip: Codable, Identifiable, Hashable, Sendable {
     /// ("device got hot mid-clip", "only 60 fps was available").
     var warnings: [String]
 
+    // MARK: Which way was down (added 2026-09-24; every field optional, so older sidecars decode)
+
+    /// Gravity as CoreMotion measured it while this clip was filmed, in the **device** frame.
+    /// `nil` with `gravityUnavailableReason` when there is none — never a default "straight down".
+    var gravityDevice: GravityMeasurement?
+    /// Why `gravityDevice` is nil: the Simulator, a device with no motion sensors, a recording that
+    /// returned no samples. A clip that was not filmed in ArcLab has no sidecar at all and is
+    /// handled where it is imported.
+    var gravityUnavailableReason: String?
+    /// The rotation the capture connection was told to apply while this clip was being written
+    /// (`AVCaptureDevice.RotationCoordinator.videoRotationAngleForHorizonLevelCapture`), degrees.
+    var captureRotationDegrees: Double?
+    /// The rotation the finished file's own video track carries in its `preferredTransform`,
+    /// degrees, read back off the written file.
+    var storedTransformRotationDegrees: Double?
+
+    /// Rotation from the camera's native buffer to the pixels **stored** in this file, degrees.
+    ///
+    /// Worked out by subtraction rather than assumed, because the two ways a movie writer can honour
+    /// a rotation are indistinguishable from the outside: it can turn the pixels (the track's
+    /// transform is then identity) or leave them native and write the rotation into the track (the
+    /// pixels are then unrotated). The connection was told to rotate by `captureRotationDegrees`;
+    /// the finished track rotates by `storedTransformRotationDegrees` on its way to the screen; what
+    /// is left is what the stored pixels carry. This matters because the reader decodes samples and
+    /// never applies the preferred transform, so the *stored* frame is the one the rim points and
+    /// the ball detections live in.
+    var sensorToStoredRotationDegrees: Double? {
+        guard let applied = captureRotationDegrees, let stored = storedTransformRotationDegrees else { return nil }
+        return applied - stored
+    }
+
+    /// Up (away from the floor) in this clip's own camera frame — what
+    /// `RimCalibrationOptions.knownUp` wants. `nil` whenever anything it needs is missing; the
+    /// companion `measuredUpUnavailableReason` says which.
+    var measuredCameraUp: SIMD3<Double>? {
+        guard let g = gravityDevice, g.spreadDegrees <= GravityMeasurement.maxSpreadDegrees,
+              let rotation = sensorToStoredRotationDegrees else { return nil }
+        return CameraGravity.imageUp(fromDeviceGravity: g.deviceVector, sensorToImageDegrees: rotation)
+    }
+
+    /// Why `measuredCameraUp` is nil, in the shooter's words. `nil` when it is not.
+    var measuredUpUnavailableReason: String? {
+        if measuredCameraUp != nil { return nil }
+        if let reason = gravityUnavailableReason { return reason }
+        guard let g = gravityDevice else {
+            return "this recording carries no measurement of which way was down"
+        }
+        if g.spreadDegrees > GravityMeasurement.maxSpreadDegrees {
+            return String(format: "the phone moved %.0f° while it was filming, so this clip has no single direction of down",
+                          g.spreadDegrees)
+        }
+        if sensorToStoredRotationDegrees == nil {
+            return "how the picture was turned when it was written is not recorded for this clip, so the measured direction cannot be put in the camera's frame"
+        }
+        return "which way was down could not be worked out for this clip"
+    }
+
     init(
         id: UUID = UUID(),
         movieFileName: String,
@@ -76,7 +135,11 @@ struct RecordedClip: Codable, Identifiable, Hashable, Sendable {
         focusLocked: Bool,
         exposureLocked: Bool,
         protocolVersion: String = "v1",
-        warnings: [String] = []
+        warnings: [String] = [],
+        gravityDevice: GravityMeasurement? = nil,
+        gravityUnavailableReason: String? = nil,
+        captureRotationDegrees: Double? = nil,
+        storedTransformRotationDegrees: Double? = nil
     ) {
         self.id = id
         self.movieFileName = movieFileName
@@ -94,6 +157,10 @@ struct RecordedClip: Codable, Identifiable, Hashable, Sendable {
         self.exposureLocked = exposureLocked
         self.protocolVersion = protocolVersion
         self.warnings = warnings
+        self.gravityDevice = gravityDevice
+        self.gravityUnavailableReason = gravityUnavailableReason
+        self.captureRotationDegrees = captureRotationDegrees
+        self.storedTransformRotationDegrees = storedTransformRotationDegrees
     }
 
     // MARK: - Where the files live
@@ -172,13 +239,22 @@ struct RecordedClip: Codable, Identifiable, Hashable, Sendable {
     /// sample table. When the two disagree by more than a frame or so the clip dropped frames — on an
     /// iPhone that is nearly always the thermal governor quietly stepping the sensor down, which is
     /// exactly the failure the filming protocol warns about.
-    static func measure(url: URL) async -> (nominal: Double?, average: Double?, duration: Double?, size: CGSize?) {
+    static func measure(url: URL) async -> (nominal: Double?, average: Double?, duration: Double?, size: CGSize?,
+                                            transformRotationDegrees: Double?) {
         let asset = AVURLAsset(url: url)
         guard let track = try? await asset.loadTracks(withMediaType: .video).first else {
-            return (nil, nil, nil, nil)
+            return (nil, nil, nil, nil, nil)
         }
         let nominal = try? await track.load(.nominalFrameRate)
         let size = try? await track.load(.naturalSize)
+        // How far the track's own transform turns the stored pixels on their way to the screen.
+        // `atan2(b, a)` is the rotation a video preferred transform encodes — an iPhone portrait
+        // clip's `(a: 0, b: 1, c: −1, d: 0)` reads 90°. Needed because the rim points are in the
+        // *stored* pixels, which the reader never rotates.
+        let transformRotation = (try? await track.load(.preferredTransform)).map { t -> Double in
+            let degrees = atan2(t.b, t.a) * 180 / .pi
+            return (degrees.rounded() + 360).truncatingRemainder(dividingBy: 360)
+        }
         let duration = try? await asset.load(.duration)
         let seconds = duration.map(CMTimeGetSeconds).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
 
@@ -200,7 +276,7 @@ struct RecordedClip: Codable, Identifiable, Hashable, Sendable {
             }
         }
 
-        return (nominal.map(Double.init), average, seconds, size)
+        return (nominal.map(Double.init), average, seconds, size, transformRotation)
     }
 
     /// The hardware identifier, e.g. "iPhone15,2". `UIDevice.model` only ever says "iPhone".
