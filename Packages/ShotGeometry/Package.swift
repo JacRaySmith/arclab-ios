@@ -30,7 +30,14 @@ let package = Package(
         // of exported BodyShot files. Foundation + simd only, like everything else here.
         .target(name: "FormEvalKit", dependencies: ["ShotGeometry"]),
         .executableTarget(name: "FormEval", dependencies: ["ShotGeometry", "FormEvalKit"]),
-        .testTarget(name: "ShotGeometryTests", dependencies: ["ShotGeometry"]),
+        // The measurement pipeline (docs/PIPELINE.md): replays cached shot windows (written by
+        // `TrajectoryProbe session --dump-windows`, no video needed here) through `ShotAnalyzer`
+        // under a named variant, and compares two replays with a paired statistical test.
+        // `ShotBenchKit` holds the statistics and scoring so they can be unit-tested; `ShotBench`
+        // is the CLI. Foundation + simd + ShotGeometry only, like FormEvalKit/FormEval.
+        .target(name: "ShotBenchKit", dependencies: ["ShotGeometry"]),
+        .executableTarget(name: "ShotBench", dependencies: ["ShotGeometry", "ShotBenchKit"]),
+        .testTarget(name: "ShotGeometryTests", dependencies: ["ShotGeometry", "ShotBenchKit"]),
         .testTarget(name: "FormEvalKitTests", dependencies: ["FormEvalKit", "ShotGeometry"]),
     ]
 )

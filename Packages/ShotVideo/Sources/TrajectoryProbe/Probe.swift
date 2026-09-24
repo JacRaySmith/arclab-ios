@@ -58,7 +58,7 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
           TrajectoryProbe scan <clip.mov> --rim rim.json --time-scale 4 [--hfov 48] [--start s] [--end s] [--vision] [--vision-only] [--every N] [--downscale N]
                                  [--scan-lanes N] [--process-hz H] [--no-scaled-decode]
           TrajectoryProbe session <clip.mov> --rim rim.json --time-scale 4 --hfov 48 [--known-distance L] [--out session.json] [--overlays dir] [--limit N] [--no-pose] [--pose-hz H] [--legacy-tracking] [--vision-scan]
-                                    [--scan-lanes N] [--every N] [--process-hz H] [--no-scaled-decode]
+                                    [--scan-lanes N] [--every N] [--process-hz H] [--no-scaled-decode] [--spot name] [--dump-windows dir]
           environment: ARCLAB_SERIAL_PASSES=1 runs the background/candidate passes on one core and waits for
                        each Core ML inference in the decode loop; ARCLAB_NO_BATCH=1 sends tiles one at a time.
                        Both reproduce the pre-2026-09-16 timings with identical output, for measurement.
@@ -521,6 +521,65 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
             }
             print("accepted \(nAccepted) of \(inputs.count) windows (gravity within 8 %, release height 1.6–3.3 m, speed 4.5–11 m/s, depth −0.6…1.0 m, fit residual ≤ 25 px)")
             if let out = flag("--out") { try JSONSerialization.data(withJSONObject: rows.map { $0.mapValues { $0.isFinite ? $0 : -999 } }, options: [.prettyPrinted]).write(to: URL(fileURLWithPath: out)); print("wrote \(out)") }
+            // `--dump-windows`: write everything needed to re-run `ShotAnalyzer.analyze` on each of
+            // these windows later with no video (Packages/ShotGeometry/Sources/ShotBenchKit reads
+            // this format back). Purely additive — nothing above this point changes when the flag
+            // is absent, and this block only reads `inputs`/`rim`/`cal`/`k`, never mutates them.
+            if let dumpDir = flag("--dump-windows") {
+                struct DumpSample: Codable { var t: Double; var u: Double; var v: Double; var diameterPx: Double? }
+                struct WindowDump: Codable {
+                    var windowID: String
+                    var clip: String
+                    var spot: String?
+                    var samples: [DumpSample]
+                    var rimBoundary: [[Double]]
+                    var rimDiameterUsed: Double
+                    var width: Int
+                    var height: Int
+                    var hfovDegrees: Double
+                    var timeScale: Double
+                    var measuredFPS: Double
+                    var fileStart: Double
+                    var fileEnd: Double
+                    var releaseTimeOverride: Double?
+                    var dumpedAt: String
+                }
+                struct ManifestEntry: Codable { var windowID: String; var file: String; var clip: String; var spot: String?; var fileStart: Double; var sampleCount: Int }
+                let dir = URL(fileURLWithPath: dumpDir)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let spotLabel = flag("--spot")
+                let clipName = clip.lastPathComponent
+                // Stable across runs and code changes: clip stem + the window's *arrival* file time
+                // (pre-padding), rounded to 0.1 s — so it does not move if the padding constants
+                // (the 0.35 s / 0.4 s around a rim arrival) are ever retuned.
+                let clipStem = (clipName as NSString).deletingPathExtension
+                let iso = ISO8601DateFormatter()
+                let dumpEncoder = JSONEncoder(); dumpEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                var newEntries: [ManifestEntry] = []
+                for inp in inputs {
+                    let wid = String(format: "%@@%06.1f", clipStem, inp.fileStart)
+                    let dump = WindowDump(windowID: wid, clip: clipName, spot: spotLabel,
+                                          samples: inp.samples.map { DumpSample(t: $0.t, u: $0.uv.x, v: $0.uv.y, diameterPx: $0.diameterPx) },
+                                          rimBoundary: rim.points, rimDiameterUsed: cal.rimDiameterUsed,
+                                          width: k.width, height: k.height, hfovDegrees: hfov, timeScale: scale,
+                                          measuredFPS: fpsSession, fileStart: inp.start, fileEnd: inp.end,
+                                          releaseTimeOverride: inp.releaseReal, dumpedAt: iso.string(from: Date()))
+                    let filename = wid.replacingOccurrences(of: "/", with: "_") + ".json"
+                    if let data = try? dumpEncoder.encode(dump) { try? data.write(to: dir.appendingPathComponent(filename)) }
+                    newEntries.append(ManifestEntry(windowID: wid, file: filename, clip: clipName, spot: spotLabel, fileStart: inp.start, sampleCount: inp.samples.count))
+                }
+                // Merge with any existing manifest, so dumping several clips into one cache dir
+                // (the normal workflow) accumulates instead of clobbering.
+                let manifestURL = dir.appendingPathComponent("manifest.json")
+                var byID: [String: ManifestEntry] = [:]
+                if let existing = try? Data(contentsOf: manifestURL), let old = try? JSONDecoder().decode([ManifestEntry].self, from: existing) {
+                    for e in old { byID[e.windowID] = e }
+                }
+                for e in newEntries { byID[e.windowID] = e }
+                let merged = byID.values.sorted { $0.windowID < $1.windowID }
+                if let data = try? dumpEncoder.encode(merged) { try? data.write(to: manifestURL) }
+                print("dumped \(newEntries.count) window(s) to \(dumpDir) (\(merged.count) total in manifest)")
+            }
         case "analyze":
             guard let rimPath = flag("--rim"), let start = flag("--start").flatMap(Double.init), let end = flag("--end").flatMap(Double.init) else { usage() }
             struct RimFile: Decodable { var points: [[Double]] }
