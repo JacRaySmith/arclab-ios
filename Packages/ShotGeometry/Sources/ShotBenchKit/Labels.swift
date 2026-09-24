@@ -47,7 +47,18 @@ public struct LabelLoadResult: Sendable {
 }
 
 public enum LabelLoader {
-    public static var defaultPath: String { (NSString(string: "~/Desktop/arclab-review/release_labels.json")).expandingTildeInPath }
+    /// Searched in order. The in-repo copy comes first because it is version-controlled and travels
+    /// with the corpus; the Desktop copy is where the labels were first written by hand and is kept
+    /// as a fallback for a checkout that does not carry them.
+    public static var searchPaths: [String] {
+        [FileManager.default.currentDirectoryPath + "/docs/footage-2026-09-13/release_labels.json",
+         (NSString(string: "~/Desktop/arclab-review/release_labels.json")).expandingTildeInPath]
+    }
+
+    /// The first search path that exists, else the first one, so a "missing" message names a real place to look.
+    public static var defaultPath: String {
+        searchPaths.first { FileManager.default.fileExists(atPath: $0) } ?? searchPaths[0]
+    }
 
     public static func load(path: String = defaultPath) -> LabelLoadResult {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
