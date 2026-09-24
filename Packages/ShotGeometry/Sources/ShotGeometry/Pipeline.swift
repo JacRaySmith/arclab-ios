@@ -24,6 +24,11 @@ public struct AnalysisOptions: Sendable {
     /// Restrict the fixed-g azimuth solve to samples inside this time range (e.g. an external tracker's release…rim window),
     /// so held-ball and in-net samples cannot contaminate the plane. The window/release detection still sees every sample.
     public var azimuthTimeRange: ClosedRange<Double>? = nil
+    /// **Defaulted off.** A court-anchored camera pose (`CourtCalibration`, solved from marked court
+    /// features) plus, where it exists, a measured shooter position. When set, the shot-plane azimuth
+    /// is searched only inside the azimuth windows the court allows instead of the free 0…2π scan —
+    /// the bearing the rim ellipse alone cannot supply. `g` stays the check; nothing else changes.
+    public var courtAnchor: CourtShotAnchor? = nil
     public init() {}
 }
 
@@ -81,6 +86,21 @@ public enum ShotAnalyzer {
             azimuth = AzimuthSolution(frame: ShotPlaneSolver.frame(calibration: calibration, azimuth: fixed), pixelRMS: 0, curve: [],
                                       ambiguityRatio: 0, azimuthSigma: 0, warnings: ["azimuth fixed by caller"])
             azimuthFixed = true
+        } else if let anchor = options.courtAnchor {
+            // Court-anchored: the bearing is measured, so the azimuth is a search over the windows
+            // the court allows, not over the whole circle. An anchor that allows nothing is a
+            // refusal, not a fall back to the free scan.
+            let windows = anchor.azimuthWindows()
+            guard !windows.isEmpty else { throw AnalysisError.azimuth(.noValidAzimuth) }
+            let azTrack = options.azimuthTimeRange.map { r in track.filter { r.contains($0.t) } } ?? track
+            guard let az = ShotPlaneSolver.solveByFixedGravity(azTrack.count >= 8 ? azTrack : track, calibration: calibration,
+                                                               intrinsics: intrinsics,
+                                                               knownDistance: anchor.knownReleaseDistance,
+                                                               allowedAzimuths: windows) else {
+                throw AnalysisError.azimuth(.noValidAzimuth)
+            }
+            azimuth = az; azimuthFixed = true
+            warnings.append("shot plane court-anchored (" + anchor.provenance + String(format: "); residual %.3f", az.pixelRMS))
         } else if options.knownReleaseDistance != nil || options.azimuthByFixedGravity {
             let azTrack = options.azimuthTimeRange.map { r in track.filter { r.contains($0.t) } } ?? track
             guard let az = ShotPlaneSolver.solveByFixedGravity(azTrack.count >= 8 ? azTrack : track, calibration: calibration, intrinsics: intrinsics,
