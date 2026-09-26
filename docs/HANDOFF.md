@@ -54,8 +54,12 @@ needs a decision rather than a patch.
   move.
 - App **Release** build for the iOS Simulator after `xcodegen generate`, from a clean derived-data path:
   **BUILD SUCCEEDED**, no warnings in the changed files.
-- **Nothing here has run on a phone.** The three rows, the skip button and the escalation all want one
-  guided block and one plan day on a real court before any of it is believed.
+- **On the phone as 1.4.1 (4)**, installed and launched 2026-09-25: its own log reports
+  `version 1.4.1 / build 4`, `previousRunEndedCleanly: true`, and the Shoot screen drew
+  (`screen name=today`, 14 saved sessions, plan `speedVariability`). **Nothing has been shot on it** —
+  the three rows, the skip button and the escalation all still want one guided block and one plan day
+  on a real court before any of it is believed. Free provisioning was refreshed on install, so this
+  build stops launching around **2026-10-02**.
 
 ## Trap this session hit
 

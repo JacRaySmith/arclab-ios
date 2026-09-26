@@ -126,7 +126,8 @@ three choices (plan · single session · form clip), and the body pass can be sk
 shows it running, since every number the block is scored on is already in by then. *Gate:* 434 + 27 tests
 with 0 failures, eight of them new on the repeat rule; GeometryHarness `GATE: PASS` byte-identical to
 PHASE1-REPORT; Release build clean. **No measurement changed** — no `AnalysisOptions`, no `EXPERIMENTS.md`
-row. *Status:* shipped in code, **unverified on the phone**; the cap and the 30-shot block ceiling are
+row. *Status:* shipped as **1.4.1 (4)**, on the phone and launching (log says so); unverified in a real
+session. The cap and the 30-shot block ceiling are
 conventions and want the shooter's opinion after a real day. The battery ceiling is untouched: it is B5's
 12 s a shot, which is structural by §3(a) and was left alone on purpose.
 
