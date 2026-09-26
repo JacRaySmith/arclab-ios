@@ -19,6 +19,7 @@ final class NextBlockTests: XCTestCase {
                        blocksDoneToday: Int = 1,
                        shotsToday: Int = 10,
                        spreadWidens: Bool? = nil,
+                       proposalsToday: [NextBlock.ReasonKey] = [],
                        cap: NextBlock.Cap = .default) -> NextBlock.State {
         NextBlock.State(last: last, hasPlan: hasPlan, hasBaseline: hasBaseline, planSpot: .freeThrow,
                         measureName: "release-speed spread (SD)", measureUnit: "m/s", measureDecimals: 3,
@@ -26,7 +27,7 @@ final class NextBlockTests: XCTestCase {
                         drillName: "One-spot depth band", drillReps: 10, drillLadder: ladder,
                         spotsDoneToday: spotsDoneToday, blocksDoneToday: blocksDoneToday,
                         shotsToday: shotsToday, spreadWidensWithDistance: spreadWidens,
-                        cap: cap)
+                        proposalsToday: proposalsToday, cap: cap)
     }
 
     // MARK: Nothing done yet
@@ -474,6 +475,114 @@ final class NextBlockTests: XCTestCase {
             XCTAssertTrue(plan.spotSequence.isEmpty)
             XCTAssertEqual(plan.spot, .freeThrow, "every other condition is shot at the plan's spot")
         }
+    }
+
+    // MARK: The anti-repeat rule (2026-09-25)
+    //
+    // The complaint these are written from: the plan "kept giving me the same thing to do". Each of
+    // the three stalling rows now changes its ask the second time, and any of them ends the day the
+    // third time rather than asking a third time in the same words.
+
+    /// The flat drill block, shot twice, does not come back a third time as the same cued set.
+    private var flatDrill: NextBlock.LastBlock {
+        NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 26,
+                            measureValue: 0.182, measureN: 26, hasCheck: true,
+                            checkPassed: false, checkBaselineValue: 0.186, checkTarget: 0.126)
+    }
+
+    func testASecondFlatSetTakesTheCueAwayInsteadOfRepeating() {
+        let first = NextBlock.decide(state(last: flatDrill))
+        XCTAssertEqual(first.plan.reasonKey, .measureFlat)
+        XCTAssertTrue(first.plan.cued)
+
+        let second = NextBlock.decide(state(last: flatDrill, proposalsToday: [.measureFlat]))
+        XCTAssertEqual(second.plan.reasonKey, .flatTwiceUncued)
+        XCTAssertEqual(second.plan.role, .retention)
+        XCTAssertFalse(second.plan.cued, "the point of the second block is that the cue is gone")
+        XCTAssertEqual(second.plan.spot, .freeThrow)
+        XCTAssertTrue(second.isToday, "it is still today's block, just a different one")
+        XCTAssertNotEqual(second.plan.instruction, first.plan.instruction)
+    }
+
+    func testAThirdTimeEndsTheDayRatherThanAskingAgain() {
+        let d = NextBlock.decide(state(last: flatDrill, proposalsToday: [.measureFlat, .measureFlat]))
+        XCTAssertFalse(d.isToday, "the third identical ask becomes tomorrow's first block")
+        XCTAssertTrue(d.dayDoneReason?.contains("twice today") == true, d.dayDoneReason ?? "")
+        XCTAssertFalse(d.dayDoneReason?.contains("convention") == true,
+                       "this is the repeat rule, not the day cap")
+        XCTAssertTrue(d.alternatives.isEmpty || d.plan.gameLike == nil)
+    }
+
+    /// The way out of a loop cannot itself become a loop: once the un-cued block has been asked for,
+    /// a flat cued set does not bring it back a second time — the day ends instead.
+    func testTheEscalationIsNotOfferedTwiceInOneDay() {
+        let d = NextBlock.decide(state(last: flatDrill,
+                                       proposalsToday: [.measureFlat, .flatTwiceUncued, .retentionNotHeld]))
+        XCTAssertFalse(d.isToday)
+        XCTAssertTrue(d.dayDoneReason?.contains("twice today") == true, d.dayDoneReason ?? "")
+    }
+
+    func testTheSecondUnmeasurableBlockAsksForACameraChangeAndAShortSet() {
+        let last = NextBlock.LastBlock(role: .drill, spot: .elbow, countedShots: 0,
+                                       measureValue: nil, measureN: 0,
+                                       measureUnavailableReason: "No shot in that block was measurable: the ring was out of frame.",
+                                       hasCheck: true, checkPassed: nil)
+        let first = NextBlock.decide(state(last: last))
+        XCTAssertEqual(first.plan.reasonKey, .measureUnavailable)
+
+        let second = NextBlock.decide(state(last: last, proposalsToday: [.measureUnavailable]))
+        XCTAssertEqual(second.plan.reasonKey, .measureUnavailableAgain)
+        XCTAssertLessThan(second.plan.shots, first.plan.shots, "a cheap set, to test the framing")
+        XCTAssertTrue(second.plan.instruction.contains("phone"), second.plan.instruction)
+        XCTAssertTrue(second.plan.reason.contains("twice"), second.plan.reason)
+    }
+
+    /// The first ask is the shortfall itself; the second is sized by the share of shots that counted,
+    /// which is why the first one did not close the gap.
+    func testTheSecondShortBlockIsSizedByTheShareOfShotsThatCounted() {
+        let last = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 6,
+                                       attemptedShots: 10,
+                                       measureValue: 0.19, measureN: 6, hasCheck: true,
+                                       checkPassed: nil)
+        let first = NextBlock.decide(state(last: last))
+        XCTAssertEqual(first.plan.reasonKey, .notEnoughShots)
+        XCTAssertEqual(first.plan.shots, 20, "the shortfall to the floor of 25, rounded up to five")
+
+        let second = NextBlock.decide(state(last: last, proposalsToday: [.notEnoughShots]))
+        XCTAssertEqual(second.plan.reasonKey, .notEnoughShotsBigger)
+        // 19 more counted shots at 6-in-10 is about 32, rounded up to 35, clipped to the 30 ArcLab
+        // will ask for in one block.
+        XCTAssertEqual(second.plan.shots, 30)
+        XCTAssertGreaterThan(second.plan.shots, first.plan.shots)
+        XCTAssertTrue(second.plan.whatItBuys.contains("6 of 10 shots counted"), second.plan.whatItBuys)
+        XCTAssertTrue(second.plan.reason.contains("n = 6"), second.plan.reason)
+        XCTAssertTrue(second.plan.reason.contains("not a fail"), second.plan.reason)
+    }
+
+    /// With no attempted count there is no share to scale by, so nothing is invented.
+    func testTheSecondShortBlockScalesNothingWhenTheAttemptedCountIsUnknown() {
+        let last = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 6,
+                                       measureValue: 0.19, measureN: 6, hasCheck: true, checkPassed: nil)
+        let d = NextBlock.decide(state(last: last, proposalsToday: [.notEnoughShots]))
+        XCTAssertEqual(d.plan.shots, 20, "the shortfall, unscaled")
+        XCTAssertFalse(d.plan.whatItBuys.contains("counted, so"), d.plan.whatItBuys)
+    }
+
+    /// A row that moves to a different spot every time is not a repeat, so the rule leaves it alone.
+    func testTheRuleDoesNotEndTheDayOnARowThatIsMakingProgress() {
+        let passed = NextBlock.LastBlock(role: .drill, spot: .freeThrow, countedShots: 26,
+                                         measureValue: 0.11, measureN: 26, hasCheck: true,
+                                         checkPassed: true, checkBaselineValue: 0.186, checkTarget: 0.126)
+        let d = NextBlock.decide(state(last: passed, ladder: [.freeThrow, .elbow, .midRange],
+                                       proposalsToday: [.ladderNextSpot, .ladderNextSpot]))
+        XCTAssertEqual(d.plan.reasonKey, .ladderNextSpot)
+        XCTAssertTrue(d.isToday)
+    }
+
+    /// The day cap is a stated convention, so the number it is set to is worth pinning.
+    func testTheDayCapIsFiveBlocksOfTen() {
+        XCTAssertEqual(NextBlock.Cap.default.blocks, 5)
+        XCTAssertEqual(NextBlock.Cap.default.shots, 60)
     }
 
     // MARK: The ladder itself

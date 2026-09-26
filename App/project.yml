@@ -38,8 +38,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: ArcLab
-        CFBundleShortVersionString: "1.4"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "1.4.1"
+        CFBundleVersion: "4"
         UILaunchScreen: {}
         UIBackgroundModes: [audio]   # spoken per-shot feedback keeps playing if the screen locks mid-block
         UISupportedInterfaceOrientations:

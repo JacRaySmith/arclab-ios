@@ -35,6 +35,11 @@ struct TodayView: View {
         case guided
         /// The guided screen, told to pick up an unfinished session rather than start a new one.
         case resume
+        /// The plan screen and the form clip (2026-09-25). They were plain `NavigationLink`s in the
+        /// old secondary list; as two of the three choices they go through the same destination as
+        /// everything else, which keeps this screen's one `navigationDestination` one.
+        case plan
+        case formClip
         var id: Self { self }
     }
 
@@ -42,8 +47,8 @@ struct TodayView: View {
         List {
             resumeSection
             cardSection
-            primarySection
-            secondarySection
+            choicesSection
+            moreSection
         }
         .navigationTitle("Shoot")
         .navigationDestination(item: $going) { destination in
@@ -60,6 +65,10 @@ struct TodayView: View {
                                       practice: practice, doctor: doctor, store: store,
                                       resume: unfinished?.practiceBlockID == id ? unfinished : nil)
                 }
+            case .plan:
+                PracticeHomeView(practice: practice, doctor: doctor, store: store)
+            case .formClip:
+                FormClipView(store: store)
             }
         }
         .task(id: refreshKey) {
@@ -243,48 +252,89 @@ struct TodayView: View {
         return nil
     }
 
+    // MARK: The three things this screen is for
+
+    /// **Your shooting plan · Single shooting session · Form clip** (2026-09-25, the shooter's own
+    /// list). Before this the page had one button whose meaning depended on whether a plan block was
+    /// waiting, with the plan and the form clip demoted to plain rows underneath — so "just record a
+    /// few shots, no plan" and "the close-up one" were both harder to find than the thing the app had
+    /// decided you should do. Now the three are the page, in that order, and each one goes to the same
+    /// place every time.
+    ///
+    /// The plan row is the only one that reads the day's state: when a block is waiting it records
+    /// that block rather than going to the plan screen first, because two taps to start the block the
+    /// row already names is exactly the friction this change is for.
+    ///
+    /// None of the three wears the glass treatment. `docs/IMPROVEMENTS-2026-09-16.md` §1.1 item 6 put
+    /// it on *the* one prominent control, and three equal choices have no one: the only glass left on
+    /// this screen is the resume button, which appears rarely and matters more than any of these when
+    /// it does.
     @ViewBuilder
-    private var primarySection: some View {
-        if let done = dayDoneAction {
-            Section {
-                PracticeNextCard(action: done)
-                Button {
-                    going = .guided
-                } label: {
-                    primaryLabel(title: "Record another session anyway",
-                                 subtitle: "The daily limit is ArcLab's own rule, not a finding",
-                                 symbol: "basketball")
-                }
-                .primaryAction()
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
+    private var choicesSection: some View {
+        Section {
+            if let open = openBlock, dayDoneAction == nil {
+                choiceRow(title: "Your shooting plan",
+                          subtitle: "Block \(open.number): \(open.block.spot.rawValue) × \(open.block.intendedShots) · \(PracticeNames.role(open.block.role))",
+                          symbol: "list.bullet.rectangle.portrait") { going = .block(open.block.id) }
+            } else {
+                choiceRow(title: "Your shooting plan",
+                          subtitle: planRowSubtitle,
+                          symbol: "list.bullet.rectangle.portrait") { going = .plan }
             }
-        } else {
-            Section {
-                Button {
-                    going = openBlock.map { .block($0.block.id) } ?? .guided
-                } label: {
-                    if let open = openBlock {
-                        primaryLabel(title: "Record block \(open.number): \(open.block.spot.rawValue) × \(open.block.intendedShots)",
-                                     subtitle: PracticeNames.role(open.block.role),
-                                     symbol: "record.circle")
-                    } else {
-                        primaryLabel(title: "Record or analyze a session",
-                                     subtitle: "Film it here, or pick a clip you already have",
-                                     symbol: "basketball")
-                    }
-                }
-                .primaryAction()
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                // Why this block, and what recording it lets ArcLab tell you.
-                if let action = nextAction, case .record = action {
-                    PracticeNextCard(action: action, showsTitle: false)
-                }
+
+            choiceRow(title: "Single shooting session",
+                      subtitle: "Film a set now, or pick a clip you already have. Measured and saved, scored against no plan.",
+                      symbol: "basketball") { going = .guided }
+
+            choiceRow(title: "Form clip",
+                      subtitle: "The close-up one: phone 3–4 m away, no rim in frame. Body numbers only.",
+                      symbol: "figure.stand") { going = .formClip }
+
+            // Why the plan is asking for this block, or why the day is over. Under the three choices
+            // rather than above them: it explains the first row, it is not a fourth thing to do.
+            if let done = dayDoneAction {
+                PracticeNextCard(action: done)
+            } else if let action = nextAction, case .record = action {
+                PracticeNextCard(action: action, showsTitle: false)
             }
         }
+    }
+
+    /// One of the three choices: icon, title, one line of what it is, chevron. A `Button` rather than
+    /// a `NavigationLink` so all three go through this screen's single `navigationDestination`, and so
+    /// the three rows are the same control with the same chevron rather than two kinds that look alike.
+    private func choiceRow(title: String, subtitle: String, symbol: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.title2)
+                    .frame(width: 32)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(subtitle)
+    }
+
+    /// What the plan row says when it is not about to record a block.
+    private var planRowSubtitle: String {
+        if dayDoneAction != nil { return "Today's blocks are done — the plan says what tomorrow starts with" }
+        if store.activePlan == nil { return "Pick one fix and work it in blocks, scored against your own baseline" }
+        return "The blocks for the fix you are working on, and what each one is for"
     }
 
     private func primaryLabel(title: String, subtitle: String, symbol: String) -> some View {
@@ -303,18 +353,10 @@ struct TodayView: View {
 
     // MARK: Everything else
 
-    private var secondarySection: some View {
+    /// The rest. The plan and the form clip used to live here; they are two of the three choices above
+    /// now, so what is left is the two screens that are not a way of shooting a block.
+    private var moreSection: some View {
         Section {
-            NavigationLink {
-                PracticeHomeView(practice: practice, doctor: doctor, store: store)
-            } label: {
-                Label("Practice plan", systemImage: "figure.basketball.circle")
-            }
-            NavigationLink {
-                FormClipView(store: store)
-            } label: {
-                Label("Form clip", systemImage: "figure.stand")
-            }
             NavigationLink {
                 AskView(doctor: doctor)
             } label: {
@@ -327,7 +369,8 @@ struct TodayView: View {
             }
             DisclosureGroup("What each of these is") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("**Practice plan** runs a session as blocks: a spot and a number of shots each, recorded in the app, analysed and saved by themselves, and scored against the one fix being worked on.")
+                    Text("**Your shooting plan** runs a session as blocks: a spot and a number of shots each, recorded in the app, analysed and saved by themselves, and scored against the one fix being worked on. It proposes the next block when one is scored, and stops asking for the same block once it has asked twice.")
+                    Text("**Single shooting session** is the same recording and the same measurements with no plan attached: film a set or pick a clip, get every shot's numbers, saved like any other session.")
                     Text("**Form clip** is the close-up one: the phone 3–4 m away with no rim in frame. It measures the body only — the shots are found from your own wrist, and no ball number is produced.")
                     Text("**Ask about your shot** answers a complaint from the sessions already saved, and says so when there are not enough shots to answer it.")
                     Text("**Game-like blocks** are the same shot under one condition a game has — shuffled spots, a call at the catch, straight after running, with a hand up. They are offered once your plan's number has moved, because a change has to exist before it can be carried anywhere.")

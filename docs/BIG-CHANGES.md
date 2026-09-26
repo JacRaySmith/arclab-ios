@@ -113,6 +113,23 @@ spread statistics by recovered standing position, which needs the shooter's feet
 (`--dump-windows` does not write pose landmarks today). *Status:* not started; it silently distorts any
 spread-based verdict until done.
 
+**B13. The plan asked for the same block over and over, and the day was too long to finish.** The
+shooter's report after using 1.4: the plan "takes too long, takes up too much battery, and kept giving me
+the same thing to do". The engine's own table explains the third part — `measureFlat`, `measureUnavailable`
+and `notEnoughShots` re-issued themselves with the same spot, the same count and the same sentences until
+the 8-block / 100-shot cap stopped them, and `NextBlock.State` had no idea what it had already asked for.
+*Change (shipped 2026-09-25):* `State.proposalsToday` plus `NextBlock.escalate` — the second time a
+stalling row comes up it asks for something genuinely different (drop the cue; move the phone; size the
+block by the share of shots that counted), and the third time it ends the day and says so. Day cap
+5 blocks / 60 shots, down from 8 / 100 — still a stated convention. The Shoot tab became the shooter's
+three choices (plan · single session · form clip), and the body pass can be skipped from the screen that
+shows it running, since every number the block is scored on is already in by then. *Gate:* 434 + 27 tests
+with 0 failures, eight of them new on the repeat rule; GeometryHarness `GATE: PASS` byte-identical to
+PHASE1-REPORT; Release build clean. **No measurement changed** — no `AnalysisOptions`, no `EXPERIMENTS.md`
+row. *Status:* shipped in code, **unverified on the phone**; the cap and the 30-shot block ceiling are
+conventions and want the shooter's opinion after a real day. The battery ceiling is untouched: it is B5's
+12 s a shot, which is structural by §3(a) and was left alone on purpose.
+
 ## 2. Footage the user owes (blocks B1, B6 and the footwork work)
 
 - The 30–45° off-line clip (B1's second view).

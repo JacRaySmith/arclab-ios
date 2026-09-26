@@ -110,6 +110,12 @@ final class SessionModel {
     /// Non-nil while the deferred body pass is running: how many form models are done, of how many. Every ball
     /// number is already on screen by then, so this is the only thing still moving.
     private(set) var bodyPhase: (done: Int, total: Int)?
+    /// Set by `skipRemainingBodyModels()`. The body pass is the long part of a session — measured at a
+    /// median 12.0 s a shot against about 4 s for the ball numbers — and by the time it runs every
+    /// number the block is scored on is already in. Until 2026-09-25 the only way out of it was the
+    /// destructive "Stop", which reads as losing the session; the logs have 30 cancelled analyses in
+    /// two days. This flag stops the body pass and nothing else.
+    private var skipBody = false
     /// Wall-clock seconds per completed window in this batch, for the time-remaining estimate.
     private(set) var completedWindowSeconds: [Double] = []
     private var batchWallStart: Date?
@@ -401,6 +407,7 @@ final class SessionModel {
     func analyseAll(redoFailed: Bool = false) {
         guard let url = clipURL, let cal = calibration, let k = intrinsics, !isBusy else { return }
         analysing = true
+        skipBody = false
         keepAwake(true)
         analysisError = nil
         pausedByInterruption = false
@@ -579,6 +586,19 @@ final class SessionModel {
         }
     }
 
+    /// The sentence a shot carries when the shooter stopped the body pass. It says what is missing and what is
+    /// not, because "unavailable" on its own would read as a measurement failure.
+    nonisolated static let bodySkippedReason = "no body model: the form models for the rest of this session were stopped so the block could be scored straight away. Every shot number here is measured — only the body numbers are missing, and re-analysing the clip fills them in."
+
+    /// Stop the body pass and keep everything else. Offered while `bodyPhase` is running: the block's own
+    /// numbers are already measured by then, so this is the difference between standing over the phone for
+    /// two more minutes and going back to shooting.
+    func skipRemainingBodyModels() {
+        guard bodyPhase != nil else { return }
+        skipBody = true
+        ActivityLog.shared.event("analysis.body.skip.tapped", ["done": bodyPhase?.done, "total": bodyPhase?.total])
+    }
+
     /// Analyse the ball for every window first, then come back for the body models. What the shooter waits for
     /// is the shot's numbers; the body model is a card that can arrive a minute later without anyone noticing,
     /// and on a hot phone it is a quarter of the window's cost. Nothing about the ball numbers changes — the
@@ -603,6 +623,22 @@ final class SessionModel {
         var done = 0
         for id in ids {
             if Task.isCancelled { break }
+            if skipBody {
+                // Every ball number stands. The shots that did not get a body model say so in the
+                // same field a failed body pass uses, so nothing downstream has to learn a new state
+                // and no card shows a blank where a number would be.
+                let remaining = ids.drop(while: { $0 != id })
+                for skipped in remaining {
+                    guard let j = shots.firstIndex(where: { $0.id == skipped }), var updated = shots[j].result else { continue }
+                    updated.bodyUnavailableReason = Self.bodySkippedReason
+                    shots[j].result = updated
+                    shots[j].row = BlockRow(id: skipped, result: updated, rimCenterPx: rimCentre)
+                }
+                log.event("analysis.body.skipped", ["done": done, "skipped": remaining.count,
+                                                    "thermal": ActivityLog.thermal()])
+                checkpoint()
+                break
+            }
             guard let idx = shots.firstIndex(where: { $0.id == id }), let result = shots[idx].result else { continue }
             let watch = ActivityLog.Stopwatch("analysis.body", ["shot": id])
             let timings = StageTimings()

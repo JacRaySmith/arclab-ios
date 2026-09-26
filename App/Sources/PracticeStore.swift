@@ -476,6 +476,7 @@ final class PracticeStore {
                 role: NextBlock.Role(rawValue: last.role.rawValue) ?? .drill,
                 spot: lastSpot,
                 countedShots: last.acceptedShots,
+                attemptedShots: last.measuredShots ?? last.intendedShots,
                 measureValue: last.measureValue,
                 measureN: last.measureN,
                 measureUnavailableReason: last.measureUnavailableReason,
@@ -500,7 +501,11 @@ final class PracticeStore {
             spotsDoneToday: session.blocks.filter(\.isDone).compactMap { DoctorSpot(rawValue: $0.spot.rawValue) },
             blocksDoneToday: session.doneCount,
             shotsToday: session.shotsToday,
-            spreadWidensWithDistance: widens)
+            spreadWidensWithDistance: widens,
+            // What the table has already asked for today, so a row that cannot make progress
+            // escalates instead of coming back word for word (`NextBlock.escalate`). The proposals
+            // are already persisted, so this survives a relaunch along with the rest of the day.
+            proposalsToday: (session.proposals ?? []).compactMap { NextBlock.ReasonKey(rawValue: $0.reasonKey) })
     }
 
     // MARK: Adding a Learn module's drill to today

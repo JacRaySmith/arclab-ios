@@ -24,5 +24,12 @@ does not apply here; the user asked for this app to be built).
 - `docs/DECISIONS.md`: answers to the brief's open questions, with evidence.
 
 ## Toolchain
-Xcode 26.6, iOS 26.5 SDK, Swift 6.3. iPhone 14 Pro paired (`xcrun devicectl list devices`).
-`swift test` works. If only Command Line Tools are active, `GeometryChecks` still runs.
+Xcode 27.0 (27A266a), iOS 27.0 SDK, Swift 6.4 — verified 2026-09-25. `project.yml` still declares
+`xcodeVersion: "26.6"`; XcodeGen accepts it. iPhone 14 Pro paired (`xcrun devicectl list devices`).
+If only Command Line Tools are active, `GeometryChecks` still runs.
+
+**`swift test` inside the repo fails to codesign**: *"resource fork, Finder information, or similar
+detritus not allowed"* on the test bundle. This folder is file-provider-synced, so `com.apple.FinderInfo`
+lands back on the build product during the build and `xattr -c` does not hold. Build outside the tree —
+`swift test --scratch-path <dir under /tmp>`, and `-derivedDataPath` likewise for `xcodebuild`. A gate
+that cannot run is a gate that cannot fail, so do not read a skipped `swift test` as a pass.

@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.4</string>
+	<string>1.4.1</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
 	<key>NSCameraUsageDescription</key>
 	<string>ArcLab uses the camera to record shot clips for analysis. Nothing leaves the phone.</string>
 	<key>NSMicrophoneUsageDescription</key>

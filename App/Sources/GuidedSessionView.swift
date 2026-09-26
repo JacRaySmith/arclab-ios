@@ -466,6 +466,12 @@ struct GuidedSessionView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 ShotFeedView(shots: session.shots, band: band, showEveryNumber: $showEveryNumber)
+                if session.bodyPhase != nil {
+                    // Every shot number is in; only the form models are left, at about 12 s each.
+                    Button { session.skipRemainingBodyModels() } label: {
+                        Label("Finish now — skip the form models", systemImage: "forward.end")
+                    }
+                }
                 if session.analysing {
                     Button(role: .destructive) { session.cancelAnalysis() } label: { Label("Stop", systemImage: "stop.circle") }
                 } else if session.shots.contains(where: { if case .queued = $0.status { return true }; return false }) {

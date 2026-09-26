@@ -235,6 +235,13 @@ struct PracticeBlockView: View {
                     if let body = session.bodyPhase {
                         Text("every shot is measured; form model \(body.done) of \(body.total)…")
                             .font(.caption).foregroundStyle(.secondary)
+                        // The block's own numbers are all in by this point and the form models cost
+                        // about 12 s a shot, so wanting to get back to shooting is the normal case —
+                        // not something that should need the destructive "Stop".
+                        Button { session.skipRemainingBodyModels() } label: {
+                            Label("Score the block now — skip the form models", systemImage: "forward.end")
+                        }
+                        .font(.subheadline)
                     }
                     if let line = PracticeFeedback.line(for: session.lastMeasured) {
                         Text(line).font(.caption)

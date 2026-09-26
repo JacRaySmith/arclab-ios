@@ -1,3 +1,72 @@
+# START HERE — state on 2026-09-25: the Shoot tab, and the plan's convenience
+
+**Nothing in the measurement path moved.** No `AnalysisOptions`, no fit, no threshold, no
+`EXPERIMENTS.md` row: every number this build produces is the number 1.4 produced. What changed is what
+the app asks of the shooter. The 2026-09-24 section below is still the state of the measurement work,
+and **B11 (track quality) is still the highest-value open lead**.
+
+The build notes were the shooter's own, from using 1.4: the Shoot page should offer **your shooting
+plan · single shooting session · form clip**, and the plan "takes too long, takes up too much battery,
+and kept giving me the same thing to do."
+
+## What changed
+
+1. **The Shoot tab is those three choices** (`TodayView`), in that order, each going to one fixed
+   destination. It was previously one button whose meaning depended on the day's state, with the plan
+   and the form clip as plain rows underneath — so "record a few shots, no plan" was harder to find
+   than the block the app had chosen. The resume card still sits above everything and is the one glass
+   control left on the screen (IMPROVEMENTS §1.1 item 6: glass marks *the* primary control, and three
+   equal choices have no one); *Ask about your shot* and *Game-like blocks* moved down into "More".
+   Nothing was removed and no capture mode was added — all three destinations already existed.
+2. **The plan can no longer ask for the same block twice** (`NextBlock.escalate`). Three rows could
+   re-issue themselves verbatim until the day's cap stopped them — `measureFlat`, `measureUnavailable`,
+   `notEnoughShots` — which is the "same thing to do" complaint exactly. Now the second time each comes
+   up it asks for something different, and the third time any stalling row ends the day and says why.
+   `State.proposalsToday` carries the day's reason keys; they were already persisted in
+   `PracticeSession.proposals`, so it survives a relaunch.
+   - a second flat cued set → **an un-cued block instead** (is anything there without the cue?),
+   - a second unmeasurable block → **move the phone**, plus a short set to test the framing,
+   - a second under-floor block → sized by **the share of shots that actually counted**: a floor of 25
+     with 6 counted of 10 is not 19 more shots, it is about 32, clipped to the 30 ArcLab will ask for in
+     one block. `LastBlock.attemptedShots` is new, defaults to nil, and nothing is scaled without it.
+3. **The day cap is 5 blocks / 60 shots**, was 8 / 100. Still a stated convention, still raisable, and
+   *Single shooting session* is one tap for a shooter who wants more.
+4. **The form models can be skipped, and that is now a button** — "Score the block now — skip the form
+   models", offered while `bodyPhase` runs (`SessionModel.skipRemainingBodyModels`). The body pass is a
+   measured median **12.0 s a shot** against ~4 s for the ball numbers, it runs *after* every number the
+   block is scored on is already in, and the only exit was the destructive "Stop" — which is most of why
+   the logs hold 30 cancelled analyses in two days. Skipped shots carry `SessionModel.bodySkippedReason`,
+   which says the shot numbers are all measured and only the body numbers are missing; re-analysing the
+   clip fills them in.
+
+**The battery ceiling is untouched, and it is item 4's 12 s a shot.** Running body pose only when
+something reads it is **B5**, and it changes how often a body number exists — structural by
+`BIG-CHANGES.md` §3(a), so it was deliberately left alone. That is the next real battery win, and it
+needs a decision rather than a patch.
+
+## Gates
+
+- `swift test`: **434 ShotGeometryTests + 27 FormEvalKitTests, 0 failures** (was 426 + 27; the eight new
+  ones cover the repeat rule, including one pinning the cap's numbers, one checking that nothing is
+  scaled when the attempted count is unknown, and one that the way out of a loop cannot itself loop).
+- `swift run -c release GeometryHarness`: **GATE: PASS**, byte-identical to `PHASE1-REPORT.md` — row I
+  (3 px noise) still marginally FAILs exactly as recorded there, which is how you know the fit did not
+  move.
+- App **Release** build for the iOS Simulator after `xcodegen generate`, from a clean derived-data path:
+  **BUILD SUCCEEDED**, no warnings in the changed files.
+- **Nothing here has run on a phone.** The three rows, the skip button and the escalation all want one
+  guided block and one plan day on a real court before any of it is believed.
+
+## Trap this session hit
+
+`swift test` in this repo cannot codesign its test bundle: *"resource fork, Finder information, or
+similar detritus not allowed"*. The folder is file-provider-synced, so `com.apple.FinderInfo` returns to
+the build product mid-build, and `xattr -c` (even `-r`) does not hold. Build outside the tree —
+`swift test --scratch-path <dir under /tmp>`, `-derivedDataPath` for `xcodebuild`. It is in `CLAUDE.md`
+now. A gate that cannot run must never be read as a gate that passed.
+
+---
+
 # START HERE — state on 2026-09-24, written for the next agent
 
 **Read in this order:** `CLAUDE.md` → this section → `docs/PIPELINE.md` (how to measure anything) →

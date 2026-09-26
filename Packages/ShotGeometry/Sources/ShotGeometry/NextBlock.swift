@@ -66,6 +66,13 @@ public enum NextBlock {
         case gameLikeDecisionCalled
         case gameLikeFatigued
         case gameLikeContested
+        // Added 2026-09-25. Three rows of this table could re-issue themselves with the same spot,
+        // the same count and the same sentences until the day's cap stopped them — the shooter's own
+        // report was that the plan "kept giving me the same thing to do". These are what the table
+        // says the *second* time each of those rows comes up; the third time `escalate` ends the day.
+        case flatTwiceUncued
+        case measureUnavailableAgain
+        case notEnoughShotsBigger
     }
 
     // MARK: - Game-like block variants
@@ -212,7 +219,12 @@ public enum NextBlock {
             self.shots = shots
         }
 
-        public static let `default` = Cap(blocks: 8, shots: 100)
+        /// 2026-09-25: was 8 blocks / 100 shots. The shooter's report was that a plan day took too
+        /// long, and with the analysis between blocks eight blocks is most of an evening. Five blocks
+        /// of ten is the shorter convention; it is still a convention and still raisable, and a
+        /// shooter who wants more taps "Record another session anyway" — the cap has never stopped
+        /// anyone shooting, only stopped ArcLab asking.
+        public static let `default` = Cap(blocks: 5, shots: 60)
     }
 
     /// The block that was just scored.
@@ -221,6 +233,11 @@ public enum NextBlock {
         public var spot: DoctorSpot
         /// Counted (accepted) shots in the block, when the block produced any.
         public var countedShots: Int?
+        /// How many shots the block actually put through the analyser. With `countedShots` it gives
+        /// the share that counted, which is the only honest way to size a block that has to reach a
+        /// shot floor: asking for exactly the shortfall guarantees another block under the floor when
+        /// a third of the shots do not count. Nil when it is not known, and then nothing is scaled.
+        public var attemptedShots: Int?
         public var measureValue: Double?
         public var measureN: Int?
         /// The scorer's own sentence when the measure could not be computed.
@@ -240,6 +257,7 @@ public enum NextBlock {
         public var gameLike: GameLikeVariant?
 
         public init(role: Role, spot: DoctorSpot, countedShots: Int? = nil,
+                    attemptedShots: Int? = nil,
                     measureValue: Double? = nil, measureN: Int? = nil,
                     measureUnavailableReason: String? = nil, hasCheck: Bool = false,
                     checkPassed: Bool? = nil, checkBaselineValue: Double? = nil,
@@ -248,6 +266,7 @@ public enum NextBlock {
             self.role = role
             self.spot = spot
             self.countedShots = countedShots
+            self.attemptedShots = attemptedShots
             self.measureValue = measureValue
             self.measureN = measureN
             self.measureUnavailableReason = measureUnavailableReason
@@ -288,14 +307,24 @@ public enum NextBlock {
         /// True when the diagnosis says release-speed spread widens with distance (grade A), nil when
         /// it has not been measured — never assumed either way.
         public var spreadWidensWithDistance: Bool?
+        /// Every reason the table has already proposed today, oldest first. It is what stops a row
+        /// that cannot make progress from re-issuing itself (`escalate`). Defaulted empty, so a
+        /// caller that does not keep the day's history gets exactly the old behaviour.
+        public var proposalsToday: [ReasonKey]
         public var cap: Cap
+
+        /// How many times the table has already proposed a reason today.
+        public func timesProposed(_ key: ReasonKey) -> Int {
+            proposalsToday.filter { $0 == key }.count
+        }
 
         public init(last: LastBlock? = nil, hasPlan: Bool, hasBaseline: Bool, planSpot: DoctorSpot,
                     measureName: String, measureUnit: String, measureDecimals: Int,
                     grade: ShotEvidenceGrade, minimumN: Int, targetNarrowsSpread: Bool,
                     drillName: String, drillReps: Int, drillLadder: [DoctorSpot],
                     spotsDoneToday: [DoctorSpot], blocksDoneToday: Int, shotsToday: Int,
-                    spreadWidensWithDistance: Bool?, cap: Cap = .default) {
+                    spreadWidensWithDistance: Bool?, proposalsToday: [ReasonKey] = [],
+                    cap: Cap = .default) {
             self.last = last
             self.hasPlan = hasPlan
             self.hasBaseline = hasBaseline
@@ -313,6 +342,7 @@ public enum NextBlock {
             self.blocksDoneToday = blocksDoneToday
             self.shotsToday = shotsToday
             self.spreadWidensWithDistance = spreadWidensWithDistance
+            self.proposalsToday = proposalsToday
             self.cap = cap
         }
     }
@@ -332,7 +362,8 @@ public enum NextBlock {
 
     /// The next block. Never nil: when the cap is reached the same plan comes back as tomorrow's.
     public static func decide(_ s: State) -> Decision {
-        let (plan, endsDay) = propose(s)
+        let (proposed, proposedEndsDay) = propose(s)
+        let (plan, endsDay) = escalate(proposed, endsDay: proposedEndsDay, s)
         if s.blocksDoneToday >= s.cap.blocks || s.shotsToday >= s.cap.shots {
             // The cap is the cap: no alternatives are offered on top of a day that is over.
             return Decision(plan: plan, dayDoneReason: capReason(s))
@@ -395,6 +426,118 @@ public enum NextBlock {
             if last.checkPassed == false { return (retentionNotHeld(s, last), nil) }
             return (notEnoughShots(s, last), nil)
         }
+    }
+
+    // MARK: - The anti-repeat rule (added 2026-09-25)
+
+    /// The rows that can come back without any new information behind them. Every other row either
+    /// moves to a different spot, changes the role, or only happens once in a day, so repeating one
+    /// of those is progress rather than a loop. `noPlanMoreShots` is deliberately not here: its ask
+    /// shrinks as the counted shots pile up towards the attribution floor, which is progress.
+    static let stallingReasons: Set<ReasonKey> = [
+        .measureFlat, .measureUnavailable, .notEnoughShots, .baselineNeedsShots,
+        .retentionNotHeld, .planNeedsNewBaseline,
+        .flatTwiceUncued, .measureUnavailableAgain, .notEnoughShotsBigger,
+    ]
+
+    /// Stop the table proposing the same block over and over.
+    ///
+    /// The second time a stalling row comes up, three of them ask for something genuinely different
+    /// — take the cue away, move the phone, ask for the whole shortfall at once — and the rest stand.
+    /// The third time, any stalling row ends the day and says why. That is not the cap and not a
+    /// fail: the shooter has put the shots in and the number the app wanted did not arrive, so asking
+    /// identically again would measure the day rather than the change.
+    private static func escalate(_ plan: Plan, endsDay: String?, _ s: State) -> (Plan, String?) {
+        guard endsDay == nil, let last = s.last, stallingReasons.contains(plan.reasonKey) else {
+            return (plan, endsDay)
+        }
+        guard s.timesProposed(plan.reasonKey) > 0 else { return (plan, nil) }
+        // Second time this row has come up. Ask for something else — unless that something else has
+        // already been asked for today as well, which is the day having run out of new things to try
+        // rather than a reason to cycle between two blocks.
+        let alternative: Plan?
+        switch plan.reasonKey {
+        case .measureFlat: alternative = flatTwiceUncued(s, last)
+        case .measureUnavailable: alternative = measureUnavailableAgain(s, last)
+        case .notEnoughShots: alternative = notEnoughShotsBigger(s, last)
+        default: alternative = nil
+        }
+        if let alternative, s.timesProposed(plan.reasonKey) == 1, s.timesProposed(alternative.reasonKey) == 0 {
+            return (alternative, nil)
+        }
+        return (plan, enoughOfThatForToday(s))
+    }
+
+    /// Second time a cued set has not moved the number: take the cue away rather than ask for a third
+    /// identical set. This is not more of the same — an un-cued block answers a different question
+    /// (is anything there without the cue at all?), and it is the block the plan needs before anyone
+    /// can say the fix is doing nothing.
+    private static func flatTwiceUncued(_ s: State, _ last: LastBlock) -> Plan {
+        let from = last.checkBaselineValue.map { number($0, s) } ?? "the baseline"
+        let to = last.measureValue.map { number($0, s) } ?? "no number"
+        return Plan(reasonKey: .flatTwiceUncued, role: .retention, spot: last.spot, shots: 10,
+                    instruction: "Ten shots at \(last.spot.rawValue) with no cue at all. Normal routine, nothing to think about.",
+                    reason: "Two cued sets have not moved \(s.measureName) today (\(from) → \(to)). A third set with the same cue would mostly measure the day.",
+                    whatItBuys: "An un-cued block says whether the number sits where it does because of the cue or in spite of it. If it comes out the same again, this cue is not what moves this number — which is worth more than another set that says nothing.",
+                    cued: false)
+    }
+
+    /// Second time the app could not measure the block at all. The same block in the same place would
+    /// most likely produce the same nothing, so this names the thing to change and asks for a short
+    /// set — the cheapest block that can say whether the change worked.
+    private static func measureUnavailableAgain(_ s: State, _ last: LastBlock) -> Plan {
+        let why = last.measureUnavailableReason ?? "ArcLab could not measure that block."
+        let shots = min(5, max(1, s.drillReps))
+        return Plan(reasonKey: .measureUnavailableAgain, role: last.role, spot: last.spot, shots: shots,
+                    instruction: "Move the phone before this one: side on to the shot, the whole flight and the ring in frame, the phone steady on something. Then \(shots) shots at \(last.spot.rawValue).",
+                    reason: "\(why) That is twice at \(last.spot.rawValue) now, so what is wrong is not the shooting — it is where the phone is or what is in frame.",
+                    whatItBuys: "\(shots) shots is enough to tell whether the new camera position gets measured at all. If it does, the full set is worth shooting; if it does not, the answer is the framing rather than more shooting.",
+                    cued: last.role == .drill)
+    }
+
+    /// Second time the block came in under the check's shot floor. The first ask was the shortfall
+    /// itself, and it did not close the gap — because not every shot counts. So this one sizes the
+    /// block by the share that actually counted last time, which is the arithmetic that was missing:
+    /// a floor of 25 with 6 counted of 10 is not 19 more shots, it is about 32.
+    ///
+    /// Only measured numbers go in. When the attempted count is unknown nothing is scaled, and the
+    /// ask is never bigger than `maximumBlockShots` — past that the honest thing is to say the floor
+    /// is further away than one block can carry rather than to ask for a block nobody will shoot.
+    private static func notEnoughShotsBigger(_ s: State, _ last: LastBlock) -> Plan {
+        let n = last.measureN ?? last.countedShots ?? 0
+        let shortfall = max(5, s.minimumN - n)
+        let counted = last.countedShots ?? n
+        var ask = roundUpToFive(shortfall)
+        var rateSentence = ""
+        if let attempted = last.attemptedShots, attempted > 0, counted > 0, counted < attempted {
+            let scaled = Double(shortfall) * Double(attempted) / Double(counted)
+            ask = roundUpToFive(Int(scaled.rounded(.up)))
+            rateSentence = " Last block \(counted) of \(attempted) shots counted, so \(shortfall) more counted shots takes about \(ask)."
+        }
+        let clipped = ask > maximumBlockShots
+        ask = min(ask, maximumBlockShots)
+        var buys = "The last ask was the shortfall itself and it did not get there, because not every shot counts.\(rateSentence)"
+        if clipped {
+            buys += " \(maximumBlockShots) is the most ArcLab will ask for in one block, so the floor may still need a second block after this one — that is the honest position, not a target it is hiding."
+        }
+        if s.targetNarrowsSpread, let ratio = DoctorStats.detectableSDRatio(n: n + ask) {
+            buys += String(format: " At n = %d the smallest narrowing ArcLab can honestly see is %.2f×.", n + ask, ratio)
+        }
+        return Plan(reasonKey: .notEnoughShotsBigger, role: last.role, spot: last.spot, shots: ask,
+                    instruction: "\(ask) shots at \(last.spot.rawValue) in one block, the same as the last one otherwise.",
+                    reason: "\(s.measureName) is still under the check's floor: n = \(n) counted of the \(s.minimumN) it needs. That is not enough shots to tell — it is not a fail.",
+                    whatItBuys: buys,
+                    cued: last.role == .drill)
+    }
+
+    /// The most shots the table will ask for in one block. A convention, like the day cap: a block a
+    /// shooter will not finish is worse than two blocks.
+    static let maximumBlockShots = 30
+
+    /// The third time a stalling row comes up, the day ends on it. Said in the shooter's terms: what
+    /// they did is not the problem, and the block is tomorrow's rather than dropped.
+    private static func enoughOfThatForToday(_ s: State) -> String {
+        "ArcLab has asked for this block twice today and still has not got a \(s.measureName) it can score. Asking a third time would measure today more than it measures any change, so this is tomorrow's first block instead — shoot it cold, before anything else."
     }
 
     // MARK: - Each row of the table
