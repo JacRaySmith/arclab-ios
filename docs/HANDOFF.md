@@ -1,3 +1,13 @@
+> **This file is the archive, not the current state.** Read `docs/STATE.md` for what is true now.
+>
+> HANDOFF grew by appending a new `START HERE` section every few days instead of editing one, which
+> is why it is 149 KB and why its older sections still assert a day cap of 8 blocks / 100 shots (now
+> 5 / 60) and a foot-angle repeatability of ~1° (measured at 2.1°). Keep it for two things: the
+> history of how each decision was reached, and the fourteen topic deep-dives below, several of which
+> carry measurement tables that exist nowhere else — the three labelled free throws before/after, the
+> whole-clip 5→12 table, the per-stage timing table, the arrival-scanner agreement table, the spin
+> self-test, the 3-D form variability block, and the rim-finder timings.
+
 # START HERE — state on 2026-09-25: the Shoot tab, and the plan's convenience
 
 **Nothing in the measurement path moved.** No `AnalysisOptions`, no fit, no threshold, no

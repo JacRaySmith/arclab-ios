@@ -13,6 +13,10 @@ public struct WindowScore: Codable, Sendable {
     public var rmsPx: Double?
     public var releaseHeight: Double?
     public var releaseSpeed: Double?
+    /// Horizontal distance from the rim centre at release, metres. Carried because the shipping
+    /// acceptance rule refuses a release closer than `minimumReleaseDistance` (a put-back or a tip),
+    /// and until 2026-09-27 no scorecard showed the number that decision is made on.
+    public var releaseDistance: Double?
     public var releaseAngleDegrees: Double?
     public var releaseUnavailableReason: String?
     public var entryAngleDegrees: Double?
@@ -81,6 +85,11 @@ public struct LabelScoringSummary: Codable, Sendable {
 public struct Scorecard: Codable, Sendable {
     public var variant: String
     public var variantSummary: String
+    /// Which acceptance rule scored this run — `"shipping"` (the phone's) or `"legacyBench"` (the
+    /// pre-2026-09-27 bench rule). Optional so scorecards written before that date still decode;
+    /// `nil` there means `"legacyBench"`, because that is what they were in fact scored with.
+    /// `Comparator.compare` refuses to read two cards scored by different rules as a comparison.
+    public var acceptance: String?
     public var cacheDir: String
     public var generatedAt: String
     public var windows: [WindowScore]
@@ -127,7 +136,8 @@ public enum BenchRunner {
     /// when reading a `baseline` scorecard for a cache assembled from partial/limited dumps (e.g. a
     /// `--limit 3` slice): pooling may not engage there the way it would on the full clip, and that
     /// is expected, not a bug in the replay.
-    static func legacyPooledAzimuthByClip(_ windows: [CachedWindow], override: @Sendable (_ window: CachedWindow) -> CalibrationOverride = { _ in CalibrationOverride() }) -> [String: Double] {
+    static func legacyPooledAzimuthByClip(_ windows: [CachedWindow], override: @Sendable (_ window: CachedWindow) -> CalibrationOverride = { _ in CalibrationOverride() },
+                                          acceptance: ShotAcceptancePolicy = .benchDefault) -> [String: Double] {
         var byClip: [String: [CachedWindow]] = [:]
         for w in windows { byClip[w.clip, default: []].append(w) }
         var out: [String: Double] = [:]
@@ -139,7 +149,7 @@ public enum BenchRunner {
                 o.azimuthByFixedGravity = true
                 if let r = w.releaseTimeOverride { o.windowOptions.releaseTimeOverride = r }
                 guard let a = try? ShotAnalyzer.analyze(track: w.samples.map(\.imageSample), calibration: cal, intrinsics: w.intrinsics, options: o),
-                      ShotAcceptance.accepted(a) else { continue }
+                      ShotAcceptance.accepted(a, policy: acceptance) else { continue }
                 azimuths.append(a.azimuth.frame.azimuth)
             }
             guard azimuths.count >= 3 else { continue }
@@ -186,13 +196,14 @@ public enum BenchRunner {
 
     /// Is this window accepted under its own per-shot solve? (The population the legacy rule and
     /// `.robustAccepted` pool over.)
-    static func acceptedUnderOwnSolve(_ w: CachedWindow, override: CalibrationOverride) -> Bool {
+    static func acceptedUnderOwnSolve(_ w: CachedWindow, override: CalibrationOverride,
+                                      acceptance: ShotAcceptancePolicy = .benchDefault) -> Bool {
         guard let cal = calibration(for: w, override: override) else { return false }
         var o = AnalysisOptions()
         o.azimuthByFixedGravity = true
         if let r = w.releaseTimeOverride { o.windowOptions.releaseTimeOverride = r }
         guard let a = try? ShotAnalyzer.analyze(track: w.samples.map(\.imageSample), calibration: cal, intrinsics: w.intrinsics, options: o) else { return false }
-        return ShotAcceptance.accepted(a)
+        return ShotAcceptance.accepted(a, policy: acceptance)
     }
 
     /// The pooled azimuth per clip under a variant's pooling strategy, plus the diagnostics that
@@ -339,7 +350,7 @@ public enum BenchRunner {
             }
             do {
                 let a = try ShotAnalyzer.analyze(track: window.samples.map(\.imageSample), calibration: cal, intrinsics: window.intrinsics, options: o)
-                let accepted = ShotAcceptance.accepted(a)
+                let accepted = ShotAcceptance.accepted(a, policy: context.acceptance)
                 var errMs: Double? = nil
                 var match: LabelMatch? = nil
                 if let labels, let m = labels.matching(window) {
@@ -348,8 +359,9 @@ public enum BenchRunner {
                     match = LabelMatch(windowID: window.windowID, clip: window.clip, labelVideo: m.label.video, errorMs: e)
                 }
                 let score = WindowScore(windowID: window.windowID, clip: window.clip, spot: window.spot, accepted: accepted,
-                                        refusalReason: ShotAcceptance.refusalReason(a), gError: a.confidence.gError, rmsPx: a.confidence.rmsPx,
+                                        refusalReason: ShotAcceptance.refusalReason(a, policy: context.acceptance), gError: a.confidence.gError, rmsPx: a.confidence.rmsPx,
                                         releaseHeight: a.metrics.release?.height, releaseSpeed: a.metrics.release?.speed,
+                                        releaseDistance: a.metrics.release?.distance,
                                         releaseAngleDegrees: a.metrics.release?.angleDegrees, releaseUnavailableReason: a.metrics.releaseUnavailableReason,
                                         entryAngleDegrees: a.metrics.entryAngleDegrees, entryAngleUnavailableReason: a.metrics.entryAngleUnavailableReason,
                                         depthPastFrontRim: a.metrics.depthPastFrontRim, sampleCount: a.confidence.nInliers, releaseTimeErrorMs: errMs,
@@ -358,7 +370,7 @@ public enum BenchRunner {
                 return (.success(score), match)
             } catch {
                 let score = WindowScore(windowID: window.windowID, clip: window.clip, spot: window.spot, accepted: false, refusalReason: "\(error)",
-                                        gError: nil, rmsPx: nil, releaseHeight: nil, releaseSpeed: nil, releaseAngleDegrees: nil,
+                                        gError: nil, rmsPx: nil, releaseHeight: nil, releaseSpeed: nil, releaseDistance: nil, releaseAngleDegrees: nil,
                                         releaseUnavailableReason: nil, entryAngleDegrees: nil, entryAngleUnavailableReason: nil,
                                         depthPastFrontRim: nil, sampleCount: nil, releaseTimeErrorMs: nil,
                                         azimuthUsedDegrees: nil, viewAngleDegrees: nil)
@@ -421,9 +433,10 @@ public enum BenchRunner {
     // MARK: - entry point
 
     public static func run(windows: [CachedWindow], variantName: String, cacheDir: String, labelsPath: String = LabelLoader.defaultPath,
-                           windowLabelsPath: String = WindowLabelLoader.defaultPath) -> Scorecard? {
+                           windowLabelsPath: String = WindowLabelLoader.defaultPath,
+                           acceptance: ShotAcceptancePolicy = .benchDefault) -> Scorecard? {
         guard let variant = Variant.named(variantName) else { return nil }
-        var context = VariantContext()
+        var context = VariantContext(acceptance: acceptance)
         let pooling = pooledAzimuth(windows, strategy: variant.pooling, override: variant.calibrationOverride)
         context.pooledAzimuthByClip = pooling.byClip
         context.pooledAzimuthByWindowID = pooling.byWindow
@@ -466,7 +479,8 @@ public enum BenchRunner {
         let windowLabelScoring = WindowLabelScorer.run(scores: scores, skipped: skipped, labelsPath: windowLabelsPath)
 
         let iso = ISO8601DateFormatter()
-        return Scorecard(variant: variant.name, variantSummary: variant.summary, cacheDir: cacheDir, generatedAt: iso.string(from: Date()),
+        return Scorecard(variant: variant.name, variantSummary: variant.summary, acceptance: acceptance.name,
+                         cacheDir: cacheDir, generatedAt: iso.string(from: Date()),
                          windows: scores, skipped: skipped, overall: overall, perSpot: perSpot,
                          labelScoring: LabelScoringSummary(sourcePath: labelResult.sourcePath, status: labelResult.status, detail: labelResult.detail, matches: matches),
                          windowLabelScoring: windowLabelScoring,

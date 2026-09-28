@@ -29,6 +29,13 @@ public struct AnalysisOptions: Sendable {
     /// is searched only inside the azimuth windows the court allows instead of the free 0…2π scan —
     /// the bearing the rim ellipse alone cannot supply. `g` stays the check; nothing else changes.
     public var courtAnchor: CourtShotAnchor? = nil
+    /// **Defaulted off.** An absolute ball-size prior for the fixed-gravity azimuth solve
+    /// (`BallSizeCue`). The rim cannot fix the plane's rotation about vertical, and on a noisy track
+    /// several azimuths fit the parabola about equally well; the ball's apparent size breaks the tie
+    /// because only one depth makes the ball the size a basketball is. Only the fixed-gravity path
+    /// reads it — the free `solve` already uses the diameter's *shape*. `g` stays the check: the cue
+    /// is a size prior, not a gravity input.
+    public var ballSizeCue: BallSizeCue? = nil
     public init() {}
 }
 
@@ -96,7 +103,8 @@ public enum ShotAnalyzer {
             guard let az = ShotPlaneSolver.solveByFixedGravity(azTrack.count >= 8 ? azTrack : track, calibration: calibration,
                                                                intrinsics: intrinsics,
                                                                knownDistance: anchor.knownReleaseDistance,
-                                                               allowedAzimuths: windows) else {
+                                                               allowedAzimuths: windows,
+                                                               ballSizeCue: options.ballSizeCue) else {
                 throw AnalysisError.azimuth(.noValidAzimuth)
             }
             azimuth = az; azimuthFixed = true
@@ -104,7 +112,8 @@ public enum ShotAnalyzer {
         } else if options.knownReleaseDistance != nil || options.azimuthByFixedGravity {
             let azTrack = options.azimuthTimeRange.map { r in track.filter { r.contains($0.t) } } ?? track
             guard let az = ShotPlaneSolver.solveByFixedGravity(azTrack.count >= 8 ? azTrack : track, calibration: calibration, intrinsics: intrinsics,
-                                                               knownDistance: options.knownReleaseDistance) else {
+                                                               knownDistance: options.knownReleaseDistance,
+                                                               ballSizeCue: options.ballSizeCue) else {
                 throw AnalysisError.azimuth(.noValidAzimuth)
             }
             azimuth = az; azimuthFixed = true

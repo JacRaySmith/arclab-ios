@@ -97,6 +97,11 @@ public struct ReleaseMetrics: Sendable {
     public var speed: Double                  // m/s
     public var distance: Double               // horizontal, release point → rim centre, m
     public var angleDegrees: Double { Angle.degrees(angle) }
+    /// Public so a test can state a release directly instead of having to simulate one that lands
+    /// on the numbers it wants to probe.
+    public init(angle: Double, height: Double, speed: Double, distance: Double) {
+        self.angle = angle; self.height = height; self.speed = speed; self.distance = distance
+    }
 }
 
 public struct ShotMetrics: Sendable {

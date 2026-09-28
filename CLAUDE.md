@@ -15,6 +15,31 @@ does not apply here; the user asked for this app to be built).
    `docs/PHASE<N>-REPORT.md`. Run `swift run -c release GeometryHarness` before claiming Phase 1 still passes.
 6. Zero network calls in the analysis path.
 
+## Read these, in this order
+A new agent following the old version of this section reached the textbook digests and never found
+the measurement loop, the backlog, or the state of the build. The order is:
+
+1. **this file**
+2. **`docs/STATE.md`** — what ships, the current gate numbers, where the corpus stands, the one open
+   lead, and what is blocked on you. One page, overwritten in place, never appended to.
+   `docs/HANDOFF.md` is now the archive of past states and the topic deep-dives; read it for history
+   and for the measurement tables it alone carries, not for what is true today.
+3. **`docs/PIPELINE.md`** — how to measure anything, and what the current corpus can and cannot say.
+   Then **`docs/EXPERIMENTS.md`**, the ledger: one row per comparison acted on, each traceable to a
+   p-value. Never change analysis behaviour without adding a row.
+4. **`docs/BIG-CHANGES.md`** — the ranked structural backlog (B1–B14) with the evidence for each.
+   `docs/IMPROVEMENTS-2026-09-16.md` is the longer polish list underneath it.
+
+`App/README.md` is the best prose description of what the app actually does today — consult it
+before re-deriving a screen's behaviour from the source.
+
+**Constants are the code, not the prose.** `ShotGeometry/Constants.swift` is the single source:
+size-7 ball **0.2385 m**, rim inner **0.4572 m**, rim height **3.048 m**, free-throw line to rim
+centre **4.191 m**. `docs/BRIEF.md` and `docs/DECISIONS.md` agree with it.
+`docs/reference/digest-constants-and-corrections.md` says "use exactly these" and then gives the
+textbook's **0.2426 m** ball — that digest is the textbook's record, not this project's; where they
+differ, the code wins and `DECISIONS.md` says why.
+
 ## Where knowledge lives
 - `docs/reference/digest-*.md`: condensed chapters of the ArcLab textbook (formulas, thresholds,
   corrections). Consult before implementing statistics (Ch 5–6, 13), findings engine (Ch 15–16),

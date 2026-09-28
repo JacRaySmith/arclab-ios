@@ -140,6 +140,15 @@ experiment is adding one `Variant` entry, not editing the runner:
   this needs no access to the gitignored footage directory at replay time). Session-pooled like
   `baseline`. Skips a clip with no bundled auto-found trace.
 
+- **`ballSizeCue002` / `ballSizeCue02` / `ballSizeCue20`** (2026-09-27) — `autoFoundTrace`'s calibration
+  with pooling **off**, plus an absolute ball-size prior in the fixed-gravity azimuth objective
+  (`AnalysisOptions.ballSizeCue`; the weight is metres of plane-fit residual per 100 % size error).
+  Read against **`autoFoundNoPool`**, not `autoFoundTrace` — a pooled azimuth is substituted via
+  `fixedAzimuth` and would bypass the solve the cue lives in. **Measured and reverted**: 0.002 and 0.02
+  are byte-identical to the control, 0.20 loses one window and makes rmsPx significantly worse
+  (p = 0.0422). Kept only so the negative result stays reproducible; `AnalysisOptions.ballSizeCue`
+  defaults to nil.
+
 The **azimuth-pooling experiments** (2026-09-24, `docs/BENCH-RESULTS-azimuth-2026-09-24.md`) all sit
 on `autoFoundTrace`'s calibration and differ from it only in `Variant.pooling`, so they are read
 against `autoFoundTrace`, not against `baseline`: **`autoFoundNoPool`** (no pooling at all — the
@@ -287,17 +296,67 @@ build is meant for the device.
 **The lesson for this pipeline:** a gate that cannot fail is worse than no gate, because it is
 believed. When a result depends on a gate, check that the gate would have caught its own absence.
 
-## What the corpus cannot yet tell us: the missing denominator
+## The acceptance rule the bench scores with (2026-09-27)
 
-Acceptance rate is *accepted windows ÷ windows found*, and nothing in the corpus says how many of
-those windows are real shots by this shooter. A refused window may be a good shot the geometry got
-wrong, or a rebound, a warm-up, another player, or nothing at all — and those are opposite
-outcomes. Until the corpus is labelled with the real shots, acceptance rate can only be compared
-between variants on the same windows (which is what the paired McNemar test does, and why it is the
-right test), never read as an absolute score of how well the app works.
+`ShotBench run` takes `--acceptance shipping|legacy`, and **defaults to `shipping`** — the rule the
+phone applies (`ShotGeometry/ShotAcceptance.swift`). It did not used to. Until 2026-09-27 the rule
+existed in three retyped copies (the app, `Probe.swift`, `ShotBenchKit/Acceptance.swift`) and the
+bench's had drifted from the app's in two ways: no `minimumReleaseDistance`, and a window whose
+`release` or `depthPastFrontRim` was nil was refused outright rather than having that check skipped.
 
-A supporting signal that something is off: on the free-throw clip the accepted windows' release
-height has a standard deviation of 0.43 m. One shooter at one spot does not vary their release
-height by 43 cm, so either the accepted set contains windows that are not this shooter's free
-throws, or the measurement is much noisier than the acceptance gate implies. Both are worth
-knowing and they are distinguishable only with labels.
+On this corpus the difference is **5 windows** — 39 accepted under the old rule, 44 under the app's,
+all five free throws, precision 100 % either way. So:
+
+- **Every acceptance and recall number in rows dated 2026-09-24 was produced by the legacy rule.**
+  They are reproducible with `--acceptance legacy`, and every *paired* comparison between two
+  variants is unaffected, because both arms always used the same rule.
+- Every scorecard now records its rule in `Scorecard.acceptance`, and `compare` refuses two cards
+  scored by different rules rather than reporting the rule change as a variant effect.
+
+A caveat the change surfaces rather than creates: 4 of those 5 windows have **no observed release**,
+so they carry no release height, speed or angle. They are accepted because the app does not refuse a
+window for a metric it honestly could not compute — but it means "17 of 30 counted" is not the same
+claim as "17 of 30 produced the numbers the block is scored on". Worth a decision.
+
+## The intrinsics this cache was built with (2026-09-27)
+
+The cache carries `"hfovDegrees": 64`, the probe's default. `docs/PHASE2-PREP.md` measured this
+footage from vanishing points at **66.5° ± 2°** (66.3 / 67.8 / 65.4 per clip) and showed 48° to be
+absurd, but nothing re-ran the corpus at the measured value.
+
+It was re-run on 2026-09-27, with `hfovDegrees` rewritten per clip: under `autoFoundTrace`,
+**not one window of the 98 changes verdict** (b = 0, c = 0; 57 accepted either way; per-spot
+28/17/12 identical; recall 62.5 %, precision 100 %). Paired, the measured value is very slightly
+*better* — gError median Δ −0.0023 (p = 0.0275), rmsPx median Δ −0.014 px (p = 0.0001).
+
+The reason is the rim: the calibration reads the scene's scale from the rim's own angular size, so a
+uniform focal-length error largely cancels, and `g` — fitted, never assumed — absorbs what is left.
+**No result in this file or in `EXPERIMENTS.md` needs re-running.** Prefer the measured value when
+the cache is next rebuilt.
+
+## What the corpus could not tell us, and now can
+
+This section used to say that acceptance rate had no denominator — that a refused window might be a
+real shot the geometry got wrong or a rebound, and the two are opposite outcomes, so acceptance
+could only ever be compared between variants.
+
+**That was answered on 2026-09-24**, the same day it was written, by hand-labelling all 98 windows
+(`docs/footage-2026-09-13/window_labels.json`; 88 `shot`, 6 `notShot`, 4 `unsure`). Precision is
+**100 %** for every variant tried — not one accepted window was a non-shot — so the failure mode is
+entirely recall, and the scorecard now reports precision and recall directly
+(`PrecisionRecall.swift`). Read `docs/BENCH-RESULTS-2026-09-24.md` §8.
+
+The section's supporting worry — that the free-throw clip's 0.43 m release-height spread meant the
+accepted set was contaminated — was answered at the same time and **refuted**: restricting to the
+labelled shots *widens* the SD (0.430 → 0.447 m). It is a measurement-quality problem, not a
+contamination problem. `IMG_1765` also turns out to hold two shooting positions, not one
+(`docs/BENCH-RESULTS-azimuth-2026-09-24.md`), which is a second reason any per-clip grouping is
+suspect.
+
+**What is still open, and is now the sharpest question in the project:** of the 31 labelled-real
+shots that `autoFoundNoPool` still refuses, the refusal is the **gravity gate 19 times, a failed
+trajectory fit 7 times, the plausibility gate 5 times — and the azimuth solve zero times.** The
+19 gravity failures are not a scale or frame-rate error: `g_fit / 9.81` runs from −2.04 to +16.04,
+four of them negative. A fit whose g lands there is not being fed one free flight, which makes
+`FlightWindowFinder` / `ReleaseDetection` — the only core geometry with no test file — the lead,
+rather than the detector's ball diameter (`BIG-CHANGES.md` B11).

@@ -14,6 +14,10 @@ func usage() -> Never {
     print("""
     usage:
       ShotBench run <cache-dir> --variant <name> [--json out.json] [--markdown out.md] [--labels path] [--window-labels path]
+                     [--acceptance shipping|legacy]   default shipping — the rule the phone applies.
+                     `legacy` reproduces the pre-2026-09-27 bench rule (no minimum release distance;
+                     a window with no depth refused), which is what every number in
+                     docs/EXPERIMENTS.md and docs/BENCH-RESULTS-*.md was scored with.
                      variants: \(Variant.all.map(\.name).joined(separator: ", "))
       ShotBench compare <base.json> <cand.json> [--markdown out.md]
       ShotBench azimuth <cache-dir> --variant <name> [--json out.json]
@@ -71,7 +75,15 @@ func runShotBench() {
             guard !windows.isEmpty else { print("no windows loaded from \(cacheDir)"); exit(1) }
             let labelsPath = flag("labels") ?? LabelLoader.defaultPath
             let windowLabelsPath = flag("window-labels") ?? WindowLabelLoader.defaultPath
-            guard let card = BenchRunner.run(windows: windows, variantName: variantName, cacheDir: cacheDir, labelsPath: labelsPath, windowLabelsPath: windowLabelsPath) else {
+            let acceptance: ShotAcceptancePolicy
+            switch flag("acceptance") {
+            case nil, "shipping": acceptance = .shipping
+            case "legacy", "legacyBench": acceptance = .legacyBench
+            case let other?:
+                print("unknown --acceptance \"\(other)\"; use shipping or legacy"); exit(2)
+            }
+            print("acceptance rule: \(acceptance.name)")
+            guard let card = BenchRunner.run(windows: windows, variantName: variantName, cacheDir: cacheDir, labelsPath: labelsPath, windowLabelsPath: windowLabelsPath, acceptance: acceptance) else {
                 print("could not build a scorecard for variant \"\(variantName)\""); exit(1)
             }
             let md = BenchReporting.markdown(card)
@@ -116,6 +128,15 @@ func runShotBench() {
         decoder.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
         guard let base = try? decoder.decode(Scorecard.self, from: baseData) else { print("cannot decode \(basePath) as a ShotBench scorecard"); exit(1) }
         guard let cand = try? decoder.decode(Scorecard.self, from: candData) else { print("cannot decode \(candPath) as a ShotBench scorecard"); exit(1) }
+        // Two cards scored by different acceptance rules are not a comparison: every verdict flip
+        // could be the rule rather than the variant. A card written before 2026-09-27 has no
+        // `acceptance` field, and was in fact scored with the legacy rule.
+        let baseRule = base.acceptance ?? "legacyBench", candRule = cand.acceptance ?? "legacyBench"
+        if baseRule != candRule {
+            print("! refusing to compare: \(basePath) was scored with the \(baseRule) acceptance rule and \(candPath) with \(candRule).")
+            print("  Re-run one of them with --acceptance \(baseRule == "shipping" ? "shipping" : "legacy") so both sides are scored the same way.")
+            exit(2)
+        }
         let report = Comparator.compare(base: base, candidate: cand)
         let md = BenchReporting.markdown(report)
         print(md)

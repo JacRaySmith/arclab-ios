@@ -105,7 +105,26 @@ Forcing a correct shot-plane azimuth rescues none of them, so this is detection,
 the detector's diameter self-consistent along a track (the size cannot really change 58 % in flight), and treat
 a track whose implied size drifts as untrustworthy rather than fitting it. *Gate:* recall on the labelled
 98-window corpus, precision held at 100 %, within-block release-height spread per **position** (not per clip —
-`IMG_1765` holds two). *Status:* not started; this is the highest-value open measurement lead.
+`IMG_1765` holds two).
+*Status:* **premise corrected 2026-09-27, and this is no longer the top lead.** Two measurements, both in
+`docs/EXPERIMENTS.md`:
+- The drift is real and it does separate good tracks from bad — implied-diameter spread 0.496 on refused
+  real shots against 0.241 on accepted ones (AUC 0.82). And the plane's implied ball diameter is otherwise a
+  *precise* quantity: over accepted windows it is 1.157 / 1.176 / 1.181 × the true 0.2385 m on the three
+  clips — three camera placements agreeing to within 2 %, within-clip IQR 1.5–2.3 %. The detector's box bias
+  is stable, not noisy.
+- But **the azimuth is never the gate.** Of the 31 labelled-real shots `autoFoundNoPool` refuses, the refusal
+  is the gravity gate 19 times, a failed trajectory fit 7 times, the plausibility gate 5 times, and the
+  azimuth solve **zero** times. Feeding the solve an absolute ball-size prior
+  (`AnalysisOptions.ballSizeCue`, swept at three weights) rescued **no** window and made the fit residual
+  significantly worse — reverted. The ambiguity ratio this item rests on is a *symptom* of a bad track, not
+  the mechanism that rejects it.
+
+**B14 below replaces this as the top lead.** Motion blur is also ruled out as the cause of the drift (sign
+test p = 0.125; it explains 1.7 % of the variance against a 30–57 % drift). What remains untested:
+`BallDetector.hybrid` mixes a Core ML box with a threshold-dependent blob candidate along one track and
+records neither which was used nor the box's `w`/`h`, so the drift's real cause is undiagnosable from the
+cache today. Recording provenance and `w`/`h` in `--dump-windows` is the cheap next step if anyone returns.
 
 **B12. The bench groups by clip, but a clip is not a block.** `IMG_1765` contains two shooting positions, so
 its within-block spread (0.465 m) was averaging two stations; within one it is 0.190 m. *Change:* group the
@@ -130,6 +149,64 @@ row. *Status:* shipped as **1.4.1 (4)**, on the phone and launching (log says so
 session. The cap and the 30-shot block ceiling are
 conventions and want the shooter's opinion after a real day. The battery ceiling is untouched: it is B5's
 12 s a shot, which is structural by §3(a) and was left alone on purpose.
+
+**B14. The shots that are refused are short arcs of badly-tracked ball, and the fit's own span floor
+lets them through.** Measured 2026-09-27 (`docs/EXPERIMENTS.md`, and the two new test files below).
+
+*The evidence, in order.* Of the 31 labelled-real shots `autoFoundNoPool` refuses, the refusal is the
+gravity gate 19 times, a failed trajectory fit 7, the plausibility gate 5, and the azimuth solve **0** —
+so the azimuth is never the gate (which is what retired B11). The 19 gravity failures are not a scale
+or frame-rate bug: `g_fit / 9.81` runs from **−2.04 to +16.04**. Comparing the raw cached tracks:
+
+| | accepted real shots | gravity-refused real shots |
+|---|---|---|
+| median samples in the window | **122** | **34** |
+| median time span | **1.08 s** | **0.32 s** |
+| median p90 image speed | 2 551 px/s | **6 131 px/s** |
+
+A quarter of the arc, over a third of the time, moving 2.4× faster in the image.
+
+*Why that is fatal.* Curvature is the only thing carrying `g`, and a parabola's sagitta over a span T
+is `g·T²/8` — the signal falls as `T²` while the noise does not. Swept on synthetic arcs
+(`TrackSpanAndGravityTests`), the share of draws passing the 8 % gravity gate at 120 fps:
+
+| span | noise 0.007 m (≈1.5 px at 7 m) | 0.015 m | 0.030 m |
+|---|---|---|---|
+| 0.15 s (**the current `minimumSpan`**) | **34 %** | 14 % | 7 % |
+| 0.25 s | 87 % | 51 % | 29 % |
+| 0.32 s (**the refused windows' span**) | 98 % | 83 % | **52 %** |
+| 0.50 s | 100 % | 100 % | 93 % |
+| 1.00 s (**the accepted windows' span**) | 100 % | 100 % | 100 % |
+
+Two things follow, and the second is the one that was not obvious:
+1. `TrajectoryFitOptions.minimumSpan = 0.15 s` admits arcs where **a perfectly tracked ball passes
+   the gravity gate only 34 % of the time.** At that span the gate is measuring the span, not the shot.
+2. Span alone does **not** explain the refusals — a *clean* 0.32 s arc passes 98 % of the time. It is
+   span **and** detection noise together. So there are two independent levers, and either moves them.
+
+*Change, in the order the evidence supports:*
+- **Refuse honestly instead of fabricating.** A window too short for `g` to be determined should be
+  refused with "the arc is too short to measure gravity (0.32 s; needs ≈0.5 s at this track quality)",
+  not fitted and then rejected for a `g` of −20 m/s². Reporting −20 m/s² is a fabricated number
+  (CLAUDE.md rule 1) and it sends every reader — including B11 — hunting the wrong cause. This is the
+  cheapest change here and it costs no recall, because those windows are refused either way.
+- **Then lengthen the tracks.** The refused windows move 2.4× faster in the image, which is where the
+  detector loses the ball. Extending a track through fast motion is worth more than any geometry
+  change: at 1.0 s even 0.030 m noise passes the gate 100 % of the time.
+- **Do not** raise `minimumSpan` on its own without the refusal message — that converts a wrong number
+  into a silent disappearance, which is worse.
+
+*What was ruled out on the way, so nobody re-runs it:* the azimuth solve (never the gate), an absolute
+ball-size prior (rescued 0 windows, made the residual worse, reverted), motion blur as the cause of the
+implied-diameter drift (sign test p = 0.125), and a wrong focal length (re-run at the measured 66.3/67.8/65.4°;
+**0 of 98 windows changed verdict**). The flight-window segmentation itself is now tested
+(`FlightWindowFinderTests`, 9 tests) and is correct on clean, noisy, 30 fps, flight-only, post-rebound
+and held-ball-before tracks — so it is not the fault either.
+
+*Gate:* recall on the labelled 98-window corpus with precision held at 100 %, and the refusal histogram
+of labelled-real shots showing "arc too short" where it is true instead of a scattered `g`.
+*Status:* not started. **This is the highest-value open measurement lead**, and the first step is cheap:
+no new footage, no new model, no device.
 
 ## 2. Footage the user owes (blocks B1, B6 and the footwork work)
 

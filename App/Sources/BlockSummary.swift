@@ -72,77 +72,13 @@ enum RimOutcome {
 
 // MARK: - Which shots a block summary is allowed to count
 
-/// The acceptance rule from `tools/pytrack/report.py` (`accepted`), which is the brief's §4.7 gravity
-/// gate plus a plausibility gate on the solved release.
-///
-/// A shot whose fitted gravity is right can still come out of a failed shot-plane solve — the
-/// 2026-09-13 three-point block produced 11 gravity-passing shots with a 1.3 m release height, which
-/// is impossible for a jump shot. Those numbers are excluded from the block statistics, not reported.
-enum ShotAcceptance {
-    static let gravityTolerance = GravityGate.acceptTolerance      // 0.08
-    static let releaseHeight = 1.6...3.3                           // m
-    static let releaseSpeed = 4.5...11.0                           // m/s
-    static let depthPastFrontRim = -0.6...1.0                      // m
-    /// A fit whose reprojection residual is this large is not a measurement of a ball flight, whatever
-    /// its g came out as (a 162 px residual passed the gravity gate on 2026-09-14). Real tracks sit at
-    /// 3–12 px on 1080p footage.
-    static let maxReprojectionRmsPx = 25.0
-    /// A ball released closer than this to the rim centre is a put-back or a tip, not a shot from a spot. On the
-    /// 2026-09-15 240 fps recording, throws from under the basket (released 0.25 m out, 85°) were accepted and
-    /// widened the block's release angle from 50.9 ± 1.6° to 58.8 ± 15.2°.
-    static let minimumReleaseDistance = 2.0                        // m
-
-    enum Verdict: Sendable, Equatable {
-        case accepted
-        case lowConfidence(String)
-        case rejected(String)
-
-        var isAccepted: Bool { if case .accepted = self { return true }; return false }
-        var label: String {
-            switch self {
-            case .accepted: return "accept"
-            case .lowConfidence: return "low confidence"
-            case .rejected: return "reject"
-            }
-        }
-        var reason: String? {
-            switch self {
-            case .accepted: return nil
-            case .lowConfidence(let r), .rejected(let r): return r
-            }
-        }
-    }
-
-    static func evaluate(_ a: ShotAnalysis) -> Verdict {
-        let c = a.confidence, m = a.metrics
-        if c.gravityVerdict == .reject { return .rejected(GravityGate.explain(gFit: c.gFit)) }
-        var implausible: [String] = []
-        if let r = m.release {
-            if !releaseHeight.contains(r.height) {
-                implausible.append(String(format: "release height %.2f m is outside %.1f–%.1f m", r.height, releaseHeight.lowerBound, releaseHeight.upperBound))
-            }
-            if r.distance < minimumReleaseDistance {
-                implausible.append(String(format: "the ball was released %.2f m from the rim (a put-back or tip, not a shot from a spot; shots need ≥ %.0f m)", r.distance, minimumReleaseDistance))
-            }
-            if !releaseSpeed.contains(r.speed) {
-                implausible.append(String(format: "release speed %.2f m/s is outside %.1f–%.1f m/s", r.speed, releaseSpeed.lowerBound, releaseSpeed.upperBound))
-            }
-        }
-        if let d = m.depthPastFrontRim, !depthPastFrontRim.contains(d) {
-            implausible.append(String(format: "the crossing is %.2f m past the front rim, outside %.1f–%.1f m", d, depthPastFrontRim.lowerBound, depthPastFrontRim.upperBound))
-        }
-        if !implausible.isEmpty {
-            return .lowConfidence("the shot-plane solve is not believable: " + implausible.joined(separator: "; "))
-        }
-        if c.rmsPx > maxReprojectionRmsPx {
-            return .lowConfidence(String(format: "the fitted arc misses the tracked ball by %.0f px on average (limit %.0f px): the track is not one clean flight", c.rmsPx, maxReprojectionRmsPx))
-        }
-        if c.gravityVerdict == .lowConfidence {
-            return .lowConfidence(GravityGate.explain(gFit: c.gFit))
-        }
-        return .accepted
-    }
-}
+// The acceptance rule used to be defined here, and it was the *only* correct copy: the bench
+// (`ShotBenchKit/Acceptance.swift`) and the desktop probe (`TrajectoryProbe/Probe.swift`) each
+// carried their own, and both had drifted from this one — no `minimumReleaseDistance`, and a window
+// with no `depthPastFrontRim` refused rather than skipped. It now lives once, in
+// `ShotGeometry/ShotAcceptance.swift`, which this file imports; `ShotAcceptance.Verdict` and
+// `ShotAcceptance.evaluate` are unchanged in name, shape and wording, so every call site here and in
+// `ShotFeedView`/`ResultsView`/`SessionStore` reads exactly as before.
 
 // MARK: - Statistics
 

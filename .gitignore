@@ -8,6 +8,8 @@ footage/
 tools/pytrack/runs/
 tools/pytrack/shots/
 *.pkl
+__pycache__/
+*.pyc
 *.mp4
 
 # Agent worktrees

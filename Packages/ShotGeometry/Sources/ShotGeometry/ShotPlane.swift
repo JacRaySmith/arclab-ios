@@ -45,6 +45,38 @@ public struct ShotPlaneFrame: Sendable {
     }
 }
 
+/// An absolute ball-size prior for the azimuth solve.
+///
+/// The rim fixes everything about the camera except rotation about the rim's vertical axis, and on a
+/// noisy track several azimuths reproduce the parabola about equally well — measured on the
+/// 2026-09-13 corpus, refused real shots have an `ambiguityRatio` of 0.86 against 0.165 for accepted
+/// ones. The ball's apparent size breaks that tie, because only one plane puts the ball at a depth
+/// where it is the size a basketball actually is.
+///
+/// `expectedDiameter` is in the **detector's box units**, not metres of ball: a bounding box drawn
+/// round a ball is bigger than the ball. Measured on the same corpus, over the windows that were
+/// accepted, the box implies a diameter 1.157 / 1.176 / 1.181 × the true 0.2385 m on the three clips
+/// — three different camera placements agreeing to within 2 %, with a within-clip IQR of 1.5–2.3 %.
+/// So the bias is a stable property of the detector, and `expectedDiameter` should be set to
+/// `trueDiameter × thatBias`, either from a session's own accepted shots or from the constant below.
+public struct BallSizeCue: Sendable, Equatable {
+    /// The diameter, in metres, that a *correct* plane should imply from this detector's boxes.
+    public var expectedDiameter: Double
+    /// How many metres of fit residual a 100 % size error is worth. 0 disables the cue.
+    public var weight: Double
+    public init(expectedDiameter: Double, weight: Double) {
+        self.expectedDiameter = expectedDiameter; self.weight = weight
+    }
+    /// The detector's measured box bias on the 2026-09-13 corpus: the median over the three clips'
+    /// accepted windows. Stated as a convention, not a constant of nature — a different detector or
+    /// a re-trained model moves it, and a session that has its own accepted shots should prefer them.
+    public static let measuredBoxBias = 1.176
+    /// The default cue: a size-7 ball as this detector's boxes render it.
+    public static func detectorDefault(weight: Double) -> BallSizeCue {
+        BallSizeCue(expectedDiameter: BallSize.size7.diameter * measuredBoxBias, weight: weight)
+    }
+}
+
 public struct AzimuthSolution: Sendable {
     public var frame: ShotPlaneFrame
     public var pixelRMS: Double
@@ -148,7 +180,8 @@ public enum ShotPlaneSolver {
     public static func solveByFixedGravity(_ samples: [ImageSample], calibration: RimCalibration, intrinsics: CameraIntrinsics,
                                            knownDistance: Double? = nil, distanceTolerance: Double = 0.8,
                                            coarseStepDegrees: Double = 2,
-                                           allowedAzimuths: [AzimuthWindow]? = nil) -> AzimuthSolution? {
+                                           allowedAzimuths: [AzimuthWindow]? = nil,
+                                           ballSizeCue: BallSizeCue? = nil) -> AzimuthSolution? {
         guard samples.count >= 8 else { return nil }
         if let windows = allowedAzimuths, windows.isEmpty { return nil }
         var fo = TrajectoryFitOptions(); fo.fixedG = Court.g; fo.minimumSamples = 5; fo.minimumSpan = 0.05
@@ -156,13 +189,34 @@ public enum ShotPlaneSolver {
             guard let windows = allowedAzimuths else { return true }
             return windows.contains { $0.contains(az) }
         }
+        /// The physical ball diameter this candidate plane implies, in the detector's own box units:
+        /// `D = d_px · z / fx`, median along the track. A ball does not change size, so a plane that
+        /// implies a 4 cm ball is wrong whatever residual it achieves. Gravity is not used here, so
+        /// this stays independent of the g check (CLAUDE.md rule 3).
+        func impliedDiameter(_ fr: ShotPlaneFrame) -> Double? {
+            var ds: [Double] = []
+            ds.reserveCapacity(samples.count)
+            for s in samples {
+                guard let dp = s.diameterPx, dp > 0,
+                      let p = fr.intersect(ray: intrinsics.ray(s.uv)), p.z > 1e-6 else { continue }
+                ds.append(dp * p.z / intrinsics.fx)
+            }
+            guard ds.count >= 6 else { return nil }
+            return Stats.median(ds)
+        }
         func cost(_ az: Double) -> (rms: Double, x0: Double)? {
             guard allowed(az) else { return nil }
             let fr = frame(calibration: calibration, azimuth: az)
             guard let pl = project(samples, intrinsics: intrinsics, frame: fr), pl.count >= 8, let x0 = pl.first?.x, x0 < 0 else { return nil }
             if let L = knownDistance, abs(-x0 - L) > distanceTolerance { return nil }
             guard let f = try? TrajectoryFitter.fit(pl, anchorTime: pl[pl.count / 2].t, options: fo) else { return nil }
-            return (f.rms, x0)
+            var c = f.rms
+            if let cue = ballSizeCue, cue.weight > 0, let implied = impliedDiameter(fr) {
+                // Relative, so the term is scale-free; `weight` converts it into the metres the
+                // residual is measured in. A window with too few diameters is simply not penalised.
+                c += cue.weight * abs(implied / cue.expectedDiameter - 1)
+            }
+            return (c, x0)
         }
         var curve: [(Double, Double)] = []
         var best: (az: Double, rms: Double)? = nil

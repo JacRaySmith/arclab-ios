@@ -357,14 +357,12 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
             // `report.py`'s acceptance rule, as the app applies it (`ShotAcceptance.evaluate`): gravity within
             // 8 %, a physically possible release, **and** a fit that actually passes through the tracked ball.
             // The residual ceiling is the app's 25 px; without it the probe accepted rows the phone rejects.
-            let maxReprojectionRmsPx = 25.0
-            func plausible(_ m: ShotMetrics) -> Bool {
-                guard let r = m.release, let depth = m.depthPastFrontRim else { return false }
-                return r.height >= 1.6 && r.height <= 3.3 && r.speed >= 4.5 && r.speed <= 11 && depth >= -0.6 && depth <= 1.0
-            }
-            func accepted(_ a: ShotAnalysis) -> Bool {
-                a.confidence.gError <= 0.08 && plausible(a.metrics) && a.confidence.rmsPx <= maxReprojectionRmsPx
-            }
+            // One rule, imported, not retyped. This copy used to be its own `plausible`/`accepted`
+            // pair and had drifted from the app's (no `minimumReleaseDistance`; a missing depth
+            // refused rather than skipped) — see `ShotGeometry/ShotAcceptance.swift`.
+            let maxReprojectionRmsPx = ShotAcceptance.maxReprojectionRmsPx
+            func plausible(_ m: ShotMetrics) -> Bool { ShotAcceptance.plausible(m) }
+            func accepted(_ a: ShotAnalysis) -> Bool { ShotAcceptance.accepted(a) }
             let withPose = !args.contains("--no-pose")
             let legacyTracking = args.contains("--legacy-tracking")     // pre-2026-09-14 detector, for the before/after
             var inputs: [ShotInput] = []

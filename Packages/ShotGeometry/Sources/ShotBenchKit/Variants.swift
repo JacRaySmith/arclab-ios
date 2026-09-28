@@ -282,8 +282,15 @@ public struct VariantContext: Sendable {
     /// Per-window pooled azimuth, for a strategy that pools a clip into more than one group
     /// (`.clusteredRobust`). Takes precedence over `pooledAzimuthByClip` when both hold a value.
     public var pooledAzimuthByWindowID: [String: Double]
-    public init(pooledAzimuthByClip: [String: Double] = [:], pooledAzimuthByWindowID: [String: Double] = [:]) {
+    /// The acceptance rule this run scores with. Defaults to the phone's rule (`.shipping`); a run
+    /// that wants the pre-2026-09-27 bench numbers passes `.legacyBench`. It is part of the context
+    /// rather than of a `Variant` because it is a property of the *run*, not of the hypothesis: two
+    /// variants are only comparable when they were scored by the same rule.
+    public var acceptance: ShotAcceptancePolicy
+    public init(pooledAzimuthByClip: [String: Double] = [:], pooledAzimuthByWindowID: [String: Double] = [:],
+                acceptance: ShotAcceptancePolicy = .benchDefault) {
         self.pooledAzimuthByClip = pooledAzimuthByClip; self.pooledAzimuthByWindowID = pooledAzimuthByWindowID
+        self.acceptance = acceptance
     }
     /// The azimuth this variant should fix for a window, if any.
     public func pooled(for window: CachedWindow) -> Double? {
@@ -567,9 +574,53 @@ public struct Variant: Sendable {
         return .options(o)
     }
 
+
+    // MARK: - absolute ball-size cue (2026-09-27)
+    //
+    // Measured on this corpus before the variants were written: among the windows `autoFoundTrace`
+    // accepts, the plane each window solves for itself implies a ball diameter of 0.2760 / 0.2805 /
+    // 0.2817 m on the three clips — three different camera placements, agreeing to within 2 %, with
+    // a within-clip IQR of 1.5–2.3 %. The true size-7 ball is 0.2385 m, so the detector's box is a
+    // stable 1.16–1.18× the ball rather than a noisy quantity.
+    //
+    // Among *refused* windows that hand-labelling says are real shots, the same number is far less
+    // well behaved (implied-diameter spread along the track 0.496 vs 0.241 for accepted, AUC 0.82)
+    // and the azimuth solve is close to ambiguous (ambiguityRatio 0.860 vs 0.165, AUC 0.92). The
+    // hypothesis under test: the refused windows fail because several azimuths fit the parabola
+    // about equally well, and an absolute size prior — which the fixed-gravity path currently
+    // ignores on purpose — breaks that tie without touching `g`.
+    //
+    // Built on `autoFoundTrace`'s calibration with pooling **off**, because a pooled azimuth is
+    // substituted via `fixedAzimuth` and would bypass the solve the cue lives in. The control is
+    // therefore `autoFoundNoPool`, not `autoFoundTrace`.
+
+    static func ballSizeCued(name: String, weight: Double) -> Variant {
+        Variant(name: name,
+                summary: "auto-found rim trace, per-shot fixed-gravity azimuth, no pooling, plus an absolute ball-size prior in the azimuth objective (expected \(String(format: "%.4f", BallSize.size7.diameter * BallSizeCue.measuredBoxBias)) m in detector box units, weight \(weight) m per 100 % size error).",
+                pooling: .none,
+                calibrationOverride: { window in CalibrationOverride(rimBoundaryPoints: AutoFoundRimTrace.boundaryPoints(forClip: window.clip)) }) { window, _ in
+            guard AutoFoundRimTrace.boundaryPoints(forClip: window.clip) != nil else {
+                return .skip("no auto-found rim trace bundled for clip \"\(window.clip)\" (AutoFoundRimTrace.resourceByClip)")
+            }
+            var o = AnalysisOptions()
+            o.azimuthByFixedGravity = true
+            o.ballSizeCue = BallSizeCue.detectorDefault(weight: weight)
+            withReleaseOverride(window, &o)
+            return .options(o)
+        }
+    }
+
+    /// Weight sweep. A 100 % size error is worth this many metres of plane-fit residual; accepted
+    /// windows sit at a residual of ~0.015 m, so 0.02 is already a strong prior and 0.20 is close to
+    /// letting the size decide on its own.
+    public static let ballSizeCue002 = ballSizeCued(name: "ballSizeCue002", weight: 0.002)
+    public static let ballSizeCue02 = ballSizeCued(name: "ballSizeCue02", weight: 0.02)
+    public static let ballSizeCue20 = ballSizeCued(name: "ballSizeCue20", weight: 0.20)
+
     public static let all: [Variant] = [baseline, fixedGravityAzimuth, knownDistance, gravityUp, autoFoundTrace,
                                         autoFoundNoPool, autoFoundPooledMedian, autoFoundPooledMedianAccepted,
                                         autoFoundPooledGated, autoFoundPooledIterated, autoFoundPooledClustered,
-                                        autoFoundPooledClusteredTight, autoFoundAzimuthOffset5, courtAnchored]
+                                        autoFoundPooledClusteredTight, autoFoundAzimuthOffset5, courtAnchored,
+                                        ballSizeCue002, ballSizeCue02, ballSizeCue20]
     public static func named(_ name: String) -> Variant? { all.first { $0.name == name } }
 }
