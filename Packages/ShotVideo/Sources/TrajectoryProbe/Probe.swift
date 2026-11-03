@@ -59,6 +59,14 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
                                  [--scan-lanes N] [--process-hz H] [--no-scaled-decode]
           TrajectoryProbe session <clip.mov> --rim rim.json --time-scale 4 --hfov 48 [--known-distance L] [--out session.json] [--overlays dir] [--limit N] [--no-pose] [--pose-hz H] [--legacy-tracking] [--vision-scan]
                                     [--scan-lanes N] [--every N] [--process-hz H] [--no-scaled-decode] [--spot name] [--dump-windows dir]
+                                    [--track-variants a,b,c] [--gravity-time-scale]
+                                    --track-variants runs each named tracker parameter set (TrackingVariants.swift) on the same decoded
+                                    window and dumps each to <dir>/<variant>/; --gravity-time-scale also dumps <variant>-gts, where a
+                                    window refused at the declared --time-scale is re-read as ×1 content when gravity then fits.
+          TrajectoryProbe review <clip.mov> --cache <dir/variant> --out review.mov [--scores card.json] [--labels l.json] [--rim-found rim.json] [--only wid,wid] [--limit N] [--slow-x1 3]
+                                    one movie of every window in the cache for this clip, frame by frame, every detection marked (see ReviewCommand.swift)
+          TrajectoryProbe speed <clip.mov> [--start s] [--end s] [--bin s] [--out speed.json]
+                                    mean |ΔY| between consecutive frames along the file — where an exported slo-mo clip is slow and where it is not
           environment: ARCLAB_SERIAL_PASSES=1 runs the background/candidate passes on one core and waits for
                        each Core ML inference in the decode loop; ARCLAB_NO_BATCH=1 sends tiles one at a time.
                        Both reproduce the pre-2026-09-16 timings with identical output, for measurement.
@@ -102,6 +110,30 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
             case "probe":
                 let p = try await VideoReader(url: clip).probe()
                 describe(p)
+            case "speed":
+                // Content speed along the file: where an exported slo-mo clip is really slow and where it is not.
+                let start = flag("--start").flatMap(Double.init) ?? 0
+                let end = flag("--end").flatMap(Double.init)
+                let bin = flag("--bin").flatMap(Double.init) ?? 2
+                let t0 = Date()
+                let samples = try await ContentSpeed.measure(url: clip, start: start, end: end) { n, t in
+                    FileHandle.standardError.write(String(format: "  … %d frames, t = %.1f s\r", n, t).data(using: .utf8)!)
+                }
+                let head = try await VideoReader(url: clip).quickProbe(maxFrames: 30)
+                let env = ContentSpeed.envelope(samples, binSeconds: bin)
+                let sections = ContentSpeed.sections(env, clipEnd: end ?? head.trackDuration)
+                print(String(format: "%d frame differences in %.0f s", samples.count, Date().timeIntervalSince(t0)))
+                print("   t (s)   p90 |ΔY|   n")
+                for e in env { print(String(format: "%8.1f   %7.2f   %d", e.t, e.p90, e.n)) }
+                print("sections (speedFactor 1 = the slow section, 4 = normal-speed content):")
+                for s in sections { print(String(format: "  %8.1f – %8.1f s   ×%.0f", s.start, s.end, s.speedFactor)) }
+                if let out = flag("--out") {
+                    struct SpeedFile: Codable { var clip: String; var binSeconds: Double; var envelope: [[Double]]; var sections: [ContentSpeed.Section] }
+                    let f = SpeedFile(clip: clip.lastPathComponent, binSeconds: bin, envelope: env.map { [$0.t, $0.p90, Double($0.n)] }, sections: sections)
+                    let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    try enc.encode(f).write(to: URL(fileURLWithPath: out))
+                    print("wrote \(out)")
+                }
             case "track":
                 var opt = TrajectoryTrackerOptions()
                 if let v = flag("--length").flatMap(Int.init) { opt.trajectoryLength = v }
@@ -353,7 +385,34 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
             let cal = calScan
             // Pass 1: detect + analyse each shot with the per-shot fixed-g azimuth. Pass 2: the camera and the station do not
             // move within a block, so fix the azimuth at the median of the accepted shots and re-analyse everything.
-            struct ShotInput { var index: Int; var start: Double; var end: Double; var fileStart: Double; var samples: [ImageSample]; var releaseReal: Double? }
+            struct ShotInput {
+                var index: Int; var start: Double; var end: Double; var fileStart: Double; var samples: [ImageSample]; var releaseReal: Double?
+                /// The file-time → real-time factor these samples were built with. The session's `--time-scale`
+                /// unless the gravity time-scale check (`--gravity-time-scale`) found this window to be
+                /// normal-speed content and re-derived it.
+                var timeScale: Double = 1
+                /// Everything the tracker returned (edge-clipped frames included), for the diagnostics dump.
+                var detections: [BallDetection] = []
+                var seeds: [[Double]] = []
+                var expectedDiameterPx: Double = 0
+                var stats = BallDetectorStats()
+                var note: String? = nil
+            }
+            // Tracker variants, all run on the same decoded window and dumped side by side (see TrackingVariants.swift).
+            let trackVariants: [TrackingVariant] = (flag("--track-variants") ?? "").split(separator: ",").map { name in
+                guard let v = TrackingVariant.named(String(name)) else {
+                    print("unknown tracking variant \"\(name)\"; known: \(TrackingVariant.known.map(\.name).joined(separator: ", "))"); exit(2)
+                }
+                return v
+            }
+            // Ask gravity whether the declared time scale is right for each window (see `ContentSpeed`): an
+            // exported slo-mo clip runs at normal speed outside its slow section, and a shot there fits g at
+            // ~16× when the file is read as 4× slow. When a window's fit lands far outside the gate, the same
+            // decoded frames are re-tracked and re-analysed as 1× content; the window keeps that reading only if
+            // gravity then comes out near 9.81. Every variant is dumped twice: `<name>` as declared and
+            // `<name>-gts` with the re-derived scale, so the effect of the check is its own paired comparison.
+            let gravityTimeScale = args.contains("--gravity-time-scale")
+            var inputsByVariant: [String: [ShotInput]] = [:]
             // `report.py`'s acceptance rule, as the app applies it (`ShotAcceptance.evaluate`): gravity within
             // 8 %, a physically possible release, **and** a fit that actually passes through the tracked ball.
             // The residual ceiling is the app's 25 px; without it the probe accepted rows the phone rejects.
@@ -405,10 +464,68 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
                 let tw = Date()
                 var dets: [BallDetection] = []
                 var dstats = BallDetectorStats()
+                var decoded: BallDetector.WindowFrames? = nil
                 if let win = try? await BallDetector.decodeWindow(url: clip, start: start, end: end, seed: seed,
                                                                   fps: fpsSession, options: dopt, timings: wt) {
+                    decoded = win
                     let r = BallDetector.track(window: win, seed: seed, options: dopt, timings: wt)
                     dets = r.detections; dstats = r.stats
+                }
+                let seedList = seed.keys.sorted().map { [Double($0), seed[$0]!.x, seed[$0]!.y] }
+                // The tracker variants, on the same decoded frames. `base` reuses the track above.
+                if let win = decoded, !trackVariants.isEmpty {
+                    func samplesOf(_ d: [BallDetection], scale s: Double) -> [ImageSample] {
+                        d.filter { !$0.edge }.map { ImageSample(t: $0.pts / s, uv: SIMD2($0.u, $0.v), diameterPx: $0.diameterPx) }
+                    }
+                    func gravityError(_ samples: [ImageSample]) -> (gError: Double, rmsPx: Double, accepted: Bool)? {
+                        var ao = AnalysisOptions(); ao.azimuthByFixedGravity = true
+                        guard let a = try? ShotAnalyzer.analyze(track: samples, calibration: cal, intrinsics: k, options: ao) else { return nil }
+                        return (abs(a.confidence.gError), a.confidence.rmsPx, accepted(a))
+                    }
+                    for variant in trackVariants {
+                        let vo = variant.apply(dopt)
+                        let r = variant.name == "base" ? (detections: dets, stats: dstats)
+                                                        : BallDetector.track(window: win, seed: seed, options: vo, timings: nil)
+                        let declared = ShotInput(index: i + 1, start: start, end: end, fileStart: sh.start,
+                                                 samples: samplesOf(r.detections, scale: scale), releaseReal: nil,
+                                                 timeScale: scale, detections: r.detections, seeds: seedList,
+                                                 expectedDiameterPx: vo.expectedDiameterPx, stats: r.stats)
+                        inputsByVariant[variant.name, default: []].append(declared)
+                        guard gravityTimeScale else { continue }
+                        var chosen = declared
+                        let f4 = gravityError(declared.samples)
+                        // Refused (or no fit at all) at the declared scale: try the window as 1× content. A fit at
+                        // the wrong scale can still land g near 9.81 by bending the plane — the 44 s free throw
+                        // fitted g within 8 % with an 83 px residual — so the trigger is "not accepted", and the
+                        // 1× reading is kept only when gravity comes out near 9.81 *and* the fit is tighter.
+                        if scale != 1, f4 == nil || !f4!.accepted {
+                            // Two ×1 readings: the declared-scale track with its timestamps re-read (the tracker's
+                            // gates were tuned at 120 fps and degrade to 1–3 frames at 30 fps, so the ×4-gated track
+                            // is usually the better one), and a re-track under ×1 gates. Take the first that the
+                            // acceptance rule passes, else the one with the smaller gravity error.
+                            var o1 = vo; o1.timeScale = 1
+                            let r1 = BallDetector.track(window: win, seed: seed, options: o1, timings: nil)
+                            let readings: [(dets: [BallDetection], stats: BallDetectorStats, how: String)] =
+                                [(r.detections, r.stats, "declared track re-timed"), (r1.detections, r1.stats, "re-tracked at ×1 gates")]
+                            var pick: (dets: [BallDetection], stats: BallDetectorStats, how: String, f: (gError: Double, rmsPx: Double, accepted: Bool))? = nil
+                            for rd in readings {
+                                guard let f = gravityError(samplesOf(rd.dets, scale: 1)) else { continue }
+                                if pick == nil || (f.accepted && !pick!.f.accepted) || (f.accepted == pick!.f.accepted && f.gError < pick!.f.gError) {
+                                    pick = (rd.dets, rd.stats, rd.how, f)
+                                }
+                            }
+                            if let p1 = pick, case let f1 = p1.f, f1.gError <= 0.15,
+                               f4 == nil || (f1.gError < f4!.gError && f1.rmsPx < f4!.rmsPx) {
+                                let s1 = samplesOf(p1.dets, scale: 1)
+                                chosen = ShotInput(index: i + 1, start: start, end: end, fileStart: sh.start, samples: s1, releaseReal: nil,
+                                                   timeScale: 1, detections: p1.dets, seeds: seedList,
+                                                   expectedDiameterPx: o1.expectedDiameterPx, stats: p1.stats,
+                                                   note: String(format: "time scale re-derived from gravity: at the declared ×%.0f the fit gave %@; as ×1 content (%@) it gives |gError| %.3f, rms %.1f px",
+                                                                scale, f4.map { String(format: "|gError| %.2f, rms %.1f px", $0.gError, $0.rmsPx) } ?? "no fit", p1.how, f1.gError, f1.rmsPx))
+                            }
+                        }
+                        inputsByVariant[variant.name + "-gts", default: []].append(chosen)
+                    }
                 }
                 // The release instant from the shooter's wrist, exactly as the app's session flow does it: the ball
                 // alone cannot say when the hand let go. Every 2nd frame, and only over the part of the window that
@@ -441,7 +558,8 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
                 // Edge-clipped blobs have an inward-biased centroid: the fit must not see them.
                 inputs.append(ShotInput(index: i + 1, start: start, end: end, fileStart: sh.start,
                                         samples: dets.filter { legacyTracking || !$0.edge }.map { ImageSample(t: $0.pts / scale, uv: SIMD2($0.u, $0.v), diameterPx: $0.diameterPx) },
-                                        releaseReal: releaseReal))
+                                        releaseReal: releaseReal, timeScale: scale, detections: dets, seeds: seedList,
+                                        expectedDiameterPx: dopt.expectedDiameterPx, stats: dstats))
                 print(String(format: "  shot %d/%d  %.2f s  %d detections  [%d tiles on %d frames: %d aimed, %d swept, %d skipped on motion, %d still-frame sweeps skipped, %.1f ms/tile]   %@",
                              i + 1, min(shots.count, limit), spent, dets.count, dstats.coreMLTiles, dstats.coreMLFramesRun,
                              dstats.coreMLAimedFrames, dstats.coreMLGlobalFrames, dstats.coreMLMotionSkippedFrames,
@@ -543,8 +661,15 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
                     var dumpedAt: String
                 }
                 struct ManifestEntry: Codable { var windowID: String; var file: String; var clip: String; var spot: String?; var fileStart: Double; var sampleCount: Int }
-                let dir = URL(fileURLWithPath: dumpDir)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                /// The tracker's whole output for one window, next to its cache file, so a track can be drawn with
+                /// its stages and sources told apart. Not read by `ShotBench`; the manifest does not list it.
+                struct DiagDetection: Codable { var frameIndex: Int; var pts: Double; var u: Double; var v: Double; var diameterPx: Double; var edge: Bool; var source: String; var origin: String? }
+                struct WindowDiag: Codable {
+                    var windowID: String; var clip: String; var variant: String?; var timeScale: Double; var measuredFPS: Double
+                    var fileStart: Double; var fileEnd: Double; var expectedDiameterPx: Double
+                    var seeds: [[Double]]; var detections: [DiagDetection]
+                    var stats: [String: Int]; var note: String?
+                }
                 let spotLabel = flag("--spot")
                 let clipName = clip.lastPathComponent
                 // Stable across runs and code changes: clip stem + the window's *arrival* file time
@@ -553,30 +678,53 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
                 let clipStem = (clipName as NSString).deletingPathExtension
                 let iso = ISO8601DateFormatter()
                 let dumpEncoder = JSONEncoder(); dumpEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                var newEntries: [ManifestEntry] = []
-                for inp in inputs {
-                    let wid = String(format: "%@@%06.1f", clipStem, inp.fileStart)
-                    let dump = WindowDump(windowID: wid, clip: clipName, spot: spotLabel,
-                                          samples: inp.samples.map { DumpSample(t: $0.t, u: $0.uv.x, v: $0.uv.y, diameterPx: $0.diameterPx) },
-                                          rimBoundary: rim.points, rimDiameterUsed: cal.rimDiameterUsed,
-                                          width: k.width, height: k.height, hfovDegrees: hfov, timeScale: scale,
-                                          measuredFPS: fpsSession, fileStart: inp.start, fileEnd: inp.end,
-                                          releaseTimeOverride: inp.releaseReal, dumpedAt: iso.string(from: Date()))
-                    let filename = wid.replacingOccurrences(of: "/", with: "_") + ".json"
-                    if let data = try? dumpEncoder.encode(dump) { try? data.write(to: dir.appendingPathComponent(filename)) }
-                    newEntries.append(ManifestEntry(windowID: wid, file: filename, clip: clipName, spot: spotLabel, fileStart: inp.start, sampleCount: inp.samples.count))
+                func writeDump(_ list: [ShotInput], to dir: URL, variant: String?) throws {
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    var newEntries: [ManifestEntry] = []
+                    for inp in list {
+                        let wid = String(format: "%@@%06.1f", clipStem, inp.fileStart)
+                        let dump = WindowDump(windowID: wid, clip: clipName, spot: spotLabel,
+                                              samples: inp.samples.map { DumpSample(t: $0.t, u: $0.uv.x, v: $0.uv.y, diameterPx: $0.diameterPx) },
+                                              rimBoundary: rim.points, rimDiameterUsed: cal.rimDiameterUsed,
+                                              width: k.width, height: k.height, hfovDegrees: hfov, timeScale: inp.timeScale,
+                                              measuredFPS: fpsSession, fileStart: inp.start, fileEnd: inp.end,
+                                              releaseTimeOverride: inp.releaseReal, dumpedAt: iso.string(from: Date()))
+                        let filename = wid.replacingOccurrences(of: "/", with: "_") + ".json"
+                        if let data = try? dumpEncoder.encode(dump) { try? data.write(to: dir.appendingPathComponent(filename)) }
+                        newEntries.append(ManifestEntry(windowID: wid, file: filename, clip: clipName, spot: spotLabel, fileStart: inp.start, sampleCount: inp.samples.count))
+                        let s = inp.stats
+                        let diag = WindowDiag(windowID: wid, clip: clipName, variant: variant, timeScale: inp.timeScale, measuredFPS: fpsSession,
+                                              fileStart: inp.start, fileEnd: inp.end, expectedDiameterPx: inp.expectedDiameterPx,
+                                              seeds: inp.seeds,
+                                              detections: inp.detections.map { DiagDetection(frameIndex: $0.frameIndex, pts: $0.pts, u: $0.u, v: $0.v, diameterPx: $0.diameterPx, edge: $0.edge, source: $0.source, origin: $0.origin) },
+                                              stats: ["hybridRefined": s.hybridRefinedFrames, "hybridBoxOnly": s.hybridBoxOnlyFrames, "blobOnly": s.blobOnlyFrames,
+                                                      "weakDescent": s.weakDescentFrames, "boxSeedsTried": s.boxSeedsTried, "parabolaExtended": s.parabolaExtendedFrames,
+                                                      "coreMLFrames": s.coreMLFrames, "classicalFallback": s.classicalFallbackFrames],
+                                              note: inp.note)
+                        if let data = try? dumpEncoder.encode(diag) { try? data.write(to: dir.appendingPathComponent(wid.replacingOccurrences(of: "/", with: "_") + ".diag.json")) }
+                    }
+                    // Merge with any existing manifest, so dumping several clips into one cache dir
+                    // (the normal workflow) accumulates instead of clobbering.
+                    let manifestURL = dir.appendingPathComponent("manifest.json")
+                    var byID: [String: ManifestEntry] = [:]
+                    if let existing = try? Data(contentsOf: manifestURL), let old = try? JSONDecoder().decode([ManifestEntry].self, from: existing) {
+                        for e in old { byID[e.windowID] = e }
+                    }
+                    for e in newEntries { byID[e.windowID] = e }
+                    let merged = byID.values.sorted { $0.windowID < $1.windowID }
+                    if let data = try? dumpEncoder.encode(merged) { try? data.write(to: manifestURL) }
+                    let rescaled = list.filter { $0.note != nil }.count
+                    print("dumped \(newEntries.count) window(s) to \(dir.path) (\(merged.count) total in manifest)"
+                          + (rescaled > 0 ? "; \(rescaled) window(s) re-derived as ×1 content by gravity" : ""))
                 }
-                // Merge with any existing manifest, so dumping several clips into one cache dir
-                // (the normal workflow) accumulates instead of clobbering.
-                let manifestURL = dir.appendingPathComponent("manifest.json")
-                var byID: [String: ManifestEntry] = [:]
-                if let existing = try? Data(contentsOf: manifestURL), let old = try? JSONDecoder().decode([ManifestEntry].self, from: existing) {
-                    for e in old { byID[e.windowID] = e }
+                let root = URL(fileURLWithPath: dumpDir)
+                if trackVariants.isEmpty {
+                    try writeDump(inputs, to: root, variant: nil)
+                } else {
+                    for name in inputsByVariant.keys.sorted() {
+                        try writeDump(inputsByVariant[name]!, to: root.appendingPathComponent(name), variant: name)
+                    }
                 }
-                for e in newEntries { byID[e.windowID] = e }
-                let merged = byID.values.sorted { $0.windowID < $1.windowID }
-                if let data = try? dumpEncoder.encode(merged) { try? data.write(to: manifestURL) }
-                print("dumped \(newEntries.count) window(s) to \(dumpDir) (\(merged.count) total in manifest)")
             }
         case "analyze":
             guard let rimPath = flag("--rim"), let start = flag("--start").flatMap(Double.init), let end = flag("--end").flatMap(Double.init) else { usage() }
@@ -815,6 +963,7 @@ func writeOverlay(clip: URL, samples: [ImageSample], rim: [[Double]], analysis: 
             case "body": try await BodyCommand.run(clip: clip, args: args)
             case "bodyexport": try await BodyExportCommand.run(clip: clip, args: args)
             case "formclip": try await FormClipCommand.run(clip: clip, args: args)
+            case "review": try await ReviewCommand.run(clip: clip, args: args)
             case "form": try FormCommand.run(out: clip, args: args)
             case "spin": try await SpinCommand.run(clip: clip, args: args)
         case "feetbench":

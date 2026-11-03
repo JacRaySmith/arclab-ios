@@ -205,8 +205,19 @@ and held-ball-before tracks — so it is not the fault either.
 
 *Gate:* recall on the labelled 98-window corpus with precision held at 100 %, and the refusal histogram
 of labelled-real shots showing "arc too short" where it is true instead of a scattered `g`.
-*Status:* not started. **This is the highest-value open measurement lead**, and the first step is cheap:
-no new footage, no new model, no device.
+*Status:* **measured 2026-09-29, and the premise moved.** The short, fast arcs are real, but they are short
+because **the export is not 4× slow at both ends of every clip** — Photos keeps every 4th captured frame
+outside the slow section, so 15 of the 98 windows are ×1 content read as ×4 (`docs/PIPELINE.md`, "The corpus
+is not 4× slow everywhere"; four ledger rows dated 2026-09-29). Re-reading a refused window as ×1 when gravity
+then fits (`session --gravity-time-scale`) takes the corpus from 59 to **74 accepted, recall 64.0 → 80.9 %**,
+b/c 0/15, **p = 0.0001**, precision 100 %. Six track-lengthening levers were then built and measured on the
+same decoded windows (`TrackingVariants.swift`): none beats chance, and a real backward pass **loses** 28
+windows because the analyzer's flight-window finder misreads pre-release frames — so lengthening tracks is
+not where the next recall is. What is: of the 17 refused real shots, 8 are put-backs, layups and shots from
+beside or under the rim (a single view cannot condition a near-vertical flight), 3 are good tracks whose
+held-ball prefix, rebound suffix or off-frame apex the segmentation misreads, and the rest are one 1.4 s
+off-frame excursion and fast-section windows at the 1.6 m floor or on the exporter's speed ramp. The honesty change (refuse "arc too short" instead of a
+fabricated `g`) is still worth doing and is untouched.
 
 ## 2. Footage the user owes (blocks B1, B6 and the footwork work)
 

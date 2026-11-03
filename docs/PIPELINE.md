@@ -318,6 +318,47 @@ so they carry no release height, speed or angle. They are accepted because the a
 window for a metric it honestly could not compute — but it means "17 of 30 counted" is not the same
 claim as "17 of 30 produced the numbers the block is scored on". Worth a decision.
 
+## The corpus is not 4× slow everywhere (2026-09-29)
+
+Every clip of the 2026-09-13 corpus was described above as "4× slower than real time" throughout. It is not.
+An iPhone slo-mo clip exported from Photos is a constant 30 fps file whose **content** runs at 1/4 speed
+inside the slow section and at full speed outside it — the exporter keeps every captured frame in the slow
+section and every 4th elsewhere — and these three files have normal-speed stretches at **both ends**:
+
+| clip | normal-speed windows (arrival file time) | ball image speed there | in the slow section |
+|---|---|---|---|
+| `IMG_1765` | 5.4, 17.7, 32.0, 44.3 s and 1109.2, 1122.2 s | 30–48 px/frame | 8–14 px/frame |
+| `IMG_1766` | 23.7 s and 1506.1, 1519.4, 1534.9, 1547.9 s | 48–52 px/frame | 8–13 px/frame |
+| `IMG_1764` | 13.9, 26.8, 44.4, 58.0 s and 1279.8, 1297.3, 1313.0 s | 35–42 px/frame | 9–11 px/frame |
+
+Read as 4× slow, a shot there crosses the court in 0.25 s and fits **g = 90–140 m/s²** (a 4× time-scale
+error, squared, less what the plane solve absorbs). That is where most of the "19 gravity-gate refusals with
+g_fit/9.81 from −2 to +16" of the 2026-09-27 rows came from — a property of the export, not of the tracker
+or the fit. `TrajectoryProbe speed <clip>` measures the mean frame-to-frame luma difference along a file;
+on this footage it shows the ends elevated but the ball's own per-frame displacement is the clean tell.
+
+`session --gravity-time-scale` handles it per window without a hand-drawn boundary: a window whose fit is
+**refused** at the declared scale is read again as ×1 content — the declared-scale track with its timestamps
+re-read, and a fresh track under ×1 gates (the tracker's gates were tuned at 120 fps and shrink to 1–3 frames
+at 30 fps, so the re-timed track is usually the better reading) — and the ×1 reading is kept only when
+gravity then comes out within 15 % *and* the fit residual is smaller than the declared one's. Two discrete
+hypotheses (the export's two speeds), gravity choosing between them, and the 8 % gate still applied
+afterwards. The dump records the chosen `timeScale` per window and a note saying what both fits gave. The app's own recordings
+carry a true frame rate and are not affected; an imported slo-mo clip is (`AnalysisModel.sloMoStretch`
+reads one stretch per file), so the same check belongs in the import path.
+
+## Tracker variants on one decode (2026-09-29)
+
+`session --track-variants a,b,c --dump-windows <dir>` tracks every named parameter set
+(`TrajectoryProbe/TrackingVariants.swift`) on the **same decoded window** — planes, Core ML boxes and the
+background are paid for once, and `WindowFrames` memoises the per-frame candidate passes by finder
+thresholds and diameter — and dumps each to `<dir>/<variant>/` (plus `<variant>-gts` with the gravity
+time-scale check). Each cache also carries `<windowID>.diag.json`: every detection the tracker returned
+with its stage and placement (`forward.refined`, `back.weak`, `extend.blob`, …), the scanner seeds, and the
+tracker's own counters, so a track can be drawn with its sources told apart. `ShotBench` ignores the diag
+files (the manifest does not list them). Score each cache with `ShotBench run <dir>/<variant> --variant
+autoFoundNoPool` and compare any two as usual.
+
 ## The intrinsics this cache was built with (2026-09-27)
 
 The cache carries `"hfovDegrees": 64`, the probe's default. `docs/PHASE2-PREP.md` measured this

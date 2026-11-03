@@ -1,5 +1,5 @@
 {
-  "note": "Labels made by an agent (Claude, this repo's coding assistant) on 2026-09-24, by eye, from tiled review images \u2014 four frames per window extracted with `TrajectoryProbe frame` (evenly spaced across the window's fileStart..fileEnd) and tiled 2x2 with CoreGraphics/AppKit (see docs/PIPELINE.md and this task's scratch tooling; the tiling script and raw frames are not checked in). This is one person's (one agent's) visual judgement from four still frames per window, not authoritative ground truth: fast actions between sampled frames can be missed, and some labels (a drive-in layup vs. a standing jumper, a ball whose release fell between two sampled frames) are genuinely close calls \u2014 see the per-window `reason` for every `notShot` and `unsure`, and the task's final report for which `shot` calls were judgment calls too. `unsure` is a deliberate, real label: those windows are excluded from precision/recall scoring entirely (counted in neither the numerator nor denominator of either metric), not folded into `notShot` and not counted as `shot` \u2014 see `PrecisionRecall.swift`.",
+  "note": "Labels made by an agent (Claude, this repo's coding assistant) on 2026-09-24, by eye, from tiled review images \u2014 four frames per window extracted with `TrajectoryProbe frame` (evenly spaced across the window's fileStart..fileEnd) and tiled 2x2 with CoreGraphics/AppKit (see docs/PIPELINE.md and this task's scratch tooling; the tiling script and raw frames are not checked in). This is one person's (one agent's) visual judgement from four still frames per window, not authoritative ground truth: fast actions between sampled frames can be missed, and some labels (a drive-in layup vs. a standing jumper, a ball whose release fell between two sampled frames) are genuinely close calls \u2014 see the per-window `reason` for every `notShot` and `unsure`, and the task's final report for which `shot` calls were judgment calls too. `unsure` is a deliberate, real label: those windows are excluded from precision/recall scoring entirely (counted in neither the numerator nor denominator of either metric), not folded into `notShot` and not counted as `shot` \u2014 see `PrecisionRecall.swift`. 2026-09-29: one label corrected (IMG_1766@1506.1, notShot -> shot); see its reason.",
   "clips": [
     "IMG_1764.mov",
     "IMG_1765.mov",
@@ -488,8 +488,8 @@
     {
       "windowID": "IMG_1766@1506.1",
       "clip": "IMG_1766.mov",
-      "label": "notShot",
-      "reason": "player dribbles/gathers the ball throughout (no rise-and-release seen); the ball visible near the rim in frame 1 is almost certainly the tail of a previous shot landing, not a release from this window"
+      "label": "shot",
+      "reason": "relabelled 2026-09-29: the four review frames were taken from a normal-speed stretch of the export (the last minute of IMG_1766 is not slow motion), so they straddled the flight. The tracked window shows a complete arc from the shooter to the rim and fits g within 2 % once read as x1 content. Previous label: notShot (\"player dribbles/gathers the ball throughout\")."
     },
     {
       "windowID": "IMG_1766@1519.4",

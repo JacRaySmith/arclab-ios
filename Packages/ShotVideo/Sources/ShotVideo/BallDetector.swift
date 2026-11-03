@@ -25,10 +25,14 @@ public struct BallDetection: Sendable, Codable {
     public var predicted: Bool      // kept for API compatibility; always false (no position is ever extrapolated)
     public var source: String       // "detected" | "template"
     public var edge: Bool           // the blob touches the frame edge: its centroid is biased
+    /// Which stage of the tracker placed this detection and how — `"forward.refined"`, `"back.weak"`,
+    /// `"extend.blob"`, … — so a drawn track can tell its sources apart. Nil on detections made before this
+    /// field existed (it is optional so old JSON still decodes) and on `"template"` fills.
+    public var origin: String?
     public init(frameIndex: Int, pts: Double, u: Double, v: Double, diameterPx: Double,
-                score: Double, predicted: Bool, source: String, edge: Bool) {
+                score: Double, predicted: Bool, source: String, edge: Bool, origin: String? = nil) {
         self.frameIndex = frameIndex; self.pts = pts; self.u = u; self.v = v; self.diameterPx = diameterPx
-        self.score = score; self.predicted = predicted; self.source = source; self.edge = edge
+        self.score = score; self.predicted = predicted; self.source = source; self.edge = edge; self.origin = origin
     }
 }
 
@@ -209,6 +213,43 @@ public struct BallDetectorOptions: Sendable {
     /// frame leaves a hole in the seed and the model extrapolates badly: measured on 2026-09-15, that cost three
     /// 120 fps windows (89 s, 487 s, 741 s) half their inliers each and took the whole-clip count from 13 to 11.
     public var freeFlightMinimumDropDiameters: Double = 1.5
+
+    // MARK: Track-length experiments (2026-09-29, BIG-CHANGES B14)
+    //
+    // The shots the analyzer refuses are short arcs — median 0.32 s against 1.08 s for the accepted ones — and
+    // the arc is short because the *track* is short, not the flight. Every option below defaults to the
+    // behaviour the 2026-09-13 corpus was measured with; each is one lever, so the bench can price them apart.
+
+    /// Extend the track backwards with the **same linker** the forward pass uses, run over the frames in reverse:
+    /// a parabolic prediction, a gate that grows while frames are missed, `maxGapSeconds` of tolerance, and the
+    /// relaxed near-prediction blobs on the dark, fast part of the arc. The current extension is a nearest-blob
+    /// walk that ends at the **first** frame with no blob inside 1.5 D — one missed frame and the flight before
+    /// it is gone. A time-reversed parabola is still a parabola, so nothing about the model changes.
+    public var backwardLinker: Bool = false
+    /// Whether the backward linker may accept a Core ML box that no blob refines. Off keeps the hands rule the
+    /// old extension had (a box on the hands swallows ball and hand together); on trusts the hybrid placement's
+    /// own guard (`coreMLMaxBoxDiameterFactor`) instead.
+    public var backwardAllowsBoxes: Bool = false
+    /// Seed the forward linker from every ball-sized Core ML box in the window as well as from the caller's
+    /// scanner positions. The scanner only looks at the top 40 % of the frame and the rim's neighbourhood, so its
+    /// earliest seed is where the ball *enters that band*, not where it left the hand; a box lower in the frame
+    /// can start the track earlier. The longest track still wins, so a junk seed costs only its own link attempt.
+    public var seedFromCoreMLBoxes: Bool = false
+    /// The least model confidence a box needs to be a seed, and the size band (in running diameters) it must sit in.
+    public var seedBoxMinConfidence: Double = 0.5
+    public var seedBoxDiameterBand: ClosedRange<Double> = 0.6...1.5
+    /// After the track is assembled, fit the projected parabola to its clean detections and walk **outwards from
+    /// both ends**, one frame at a time, accepting a relaxed blob within `parabolaExtendRadiusDiameters` of the
+    /// prediction (refitting as it grows), tolerating `maxGapSeconds` of nothing. Positions still come from
+    /// pixels — a frame with no blob near the prediction yields nothing — so this is evidence, not interpolation.
+    /// It reaches back at most `extendBackSeconds` before the first sample and stops forwards where the free
+    /// flight trim would cut.
+    public var parabolaExtend: Bool = false
+    public var parabolaExtendRadiusDiameters: Double = 0.8
+    /// The relaxed finder's aspect ceiling. Motion blur elongates the ball along its motion — a 60 px ball
+    /// moving 50 px a frame with a full-frame exposure is a 60×110 streak, aspect 1.8, right at the strict
+    /// finder's 2.2 — so the relaxed pass may accept longer streaks when this is raised.
+    public var relaxedMaxAspect: Double? = nil
     public init() {}
 }
 
@@ -232,6 +273,8 @@ public struct BallDetectorStats: Sendable {
     public var blobOnlyFrames = 0             // no box on this frame: a plain background-difference blob
     public var weakDescentFrames = 0          // recovered by the relaxed near-prediction rule on the descent
     public var suppressedInflatedBoxes = 0    // boxes far larger than the ball (rim/net swallowed) with no blob inside
+    public var boxSeedsTried = 0              // Core ML boxes the forward linker was started from (`seedFromCoreMLBoxes`)
+    public var parabolaExtendedFrames = 0     // frames the parabola walk added at either end (`parabolaExtend`)
     /// Mean wall time per frame the model was run on, in milliseconds (crop included). Zero when it never ran.
     public var meanInferenceMilliseconds: Double {
         coreMLFramesRun > 0 ? coreMLSeconds / Double(coreMLFramesRun) * 1000 : 0
@@ -262,6 +305,9 @@ enum CandidateOrigin: Sendable { case blob, refined, box, weak }
 struct BallCandidate {
     var u: Double, v: Double, diameter: Double, meanDiff: Double, circularity: Double, edge: Bool
     var origin: CandidateOrigin = .blob
+    /// Which pass of the tracker put this candidate on the chosen track: `"forward"` (the seed-and-link pass),
+    /// `"back"` (the backward extension), `"extend"` (the parabola walk). Set when the track is assembled.
+    var stage: String = "forward"
 }
 
 /// The per-file-frame numbers every gate in `BallDetectorOptions` turns into, given the clip's capture rate.
@@ -355,6 +401,38 @@ public enum BallDetector {
             if let c = cachedBackground, c.frames == count { return (c.y, c.cr) }
             let built = BallDetector.medianBackground(frames: frames, count: count)
             cachedBackground = (count, built.y, built.cr)
+            return built
+        }
+
+        // Per-frame candidate passes, memoised by the finder's thresholds and the expected diameter — the only
+        // things `CandidateFinder.candidates` reads besides the frame and the background. Several tracker
+        // parameter sets on one window then share the one expensive pass they have in common.
+        private var candidateMemo: [String: [[BallCandidate]]] = [:]
+        private var frameMemo: [String: [Int: [BallCandidate]]] = [:]
+        private let memoLock = NSLock()
+
+        /// Everything the strict/relaxed finder's output depends on, as a key.
+        static func finderKey(_ o: BallDetectorOptions) -> String {
+            String(format: "bg%d|thr%.3f|cw%.3f|om%.3f|ext%.3f|min%.4f|max%.4f|asp%.3f|circ%.3f|ec%d",
+                   o.backgroundFrames, o.diffThreshold, o.chromaWeight, o.orangeMargin, o.extentThreshold,
+                   o.minAreaFraction, o.maxAreaFraction, o.maxAspect, o.circularityMin, o.extentCentroid ? 1 : 0)
+        }
+        func memo(_ key: String, diameter: Double, _ build: () -> [[BallCandidate]]) -> [[BallCandidate]] {
+            let k = key + String(format: "|D%.2f", diameter)
+            memoLock.lock()
+            if let hit = candidateMemo[k] { memoLock.unlock(); return hit }
+            memoLock.unlock()
+            let built = build()
+            memoLock.lock(); candidateMemo[k] = built; memoLock.unlock()
+            return built
+        }
+        func memoFrame(_ key: String, diameter: Double, _ frame: Int, _ build: () -> [BallCandidate]) -> [BallCandidate] {
+            let k = key + String(format: "|D%.2f", diameter)
+            memoLock.lock()
+            if let hit = frameMemo[k]?[frame] { memoLock.unlock(); return hit }
+            memoLock.unlock()
+            let built = build()
+            memoLock.lock(); frameMemo[k, default: [:]][frame] = built; memoLock.unlock()
             return built
         }
     }
@@ -664,22 +742,30 @@ public enum BallDetector {
             }
         }
         let tCand = StageTimings.now()
-        var cands: [[BallCandidate]]
-        if candidateWorkers > 1, frames.count >= 2 * candidateWorkers {
-            let box = CandidateSlots(count: frames.count)
-            let extra = (1..<candidateWorkers).map { _ in CandidateFinder(options: options, width: W, height: H, bgY: bgY, bgCr: bgCr) }
-            DispatchQueue.concurrentPerform(iterations: candidateWorkers) { worker in
-                let f = worker == 0 ? finder : extra[worker - 1]
-                var k = worker
-                while k < frames.count {
-                    box.set(k, f.candidates(y: frames[k].y.data, cr: frames[k].cr.data, expectedDiameterFull: D))
-                    k += candidateWorkers
+        // The strict per-frame candidates depend only on the frames, the background, the finder's thresholds and
+        // the expected diameter — never on the linker — so the window memoises them by those, and a second
+        // parameter set that shares the thresholds (a different linker, say) pays nothing for this pass.
+        let strictKey = WindowFrames.finderKey(options)
+        func strictCandidates(_ diameter: Double) -> [[BallCandidate]] {
+            window.memo(strictKey, diameter: diameter) {
+                if candidateWorkers > 1, frames.count >= 2 * candidateWorkers {
+                    let box = CandidateSlots(count: frames.count)
+                    let extra = (1..<candidateWorkers).map { _ in CandidateFinder(options: options, width: W, height: H, bgY: bgY, bgCr: bgCr) }
+                    DispatchQueue.concurrentPerform(iterations: candidateWorkers) { worker in
+                        let f = worker == 0 ? finder : extra[worker - 1]
+                        var k = worker
+                        while k < frames.count {
+                            box.set(k, f.candidates(y: frames[k].y.data, cr: frames[k].cr.data, expectedDiameterFull: diameter))
+                            k += candidateWorkers
+                        }
+                    }
+                    return box.take()
+                } else {
+                    return frames.map { finder.candidates(y: $0.y.data, cr: $0.cr.data, expectedDiameterFull: diameter) }
                 }
             }
-            cands = box.take()
-        } else {
-            cands = frames.map { finder.candidates(y: $0.y.data, cr: $0.cr.data, expectedDiameterFull: D) }
         }
+        var cands = strictCandidates(D)
         timings?.add("candidates", since: tCand, count: frames.count)
         if !useCoreML, options.refineDiameterFromSeeds {
             // The seeds sit on the ball: candidates coinciding with them measure its true size.
@@ -692,7 +778,7 @@ public enum BallDetector {
                 let med = sizes.sorted()[sizes.count / 2]
                 if abs(med / D - 1) > 0.15 {
                     D = med
-                    cands = frames.map { finder.candidates(y: $0.y.data, cr: $0.cr.data, expectedDiameterFull: D) }
+                    cands = strictCandidates(D)
                 }
             }
         }
@@ -704,13 +790,13 @@ public enum BallDetector {
         relaxedOptions.minAreaFraction = 0.5 * options.minAreaFraction
         relaxedOptions.circularityMin = min(options.circularityMin, 0.3)
         relaxedOptions.orangeMargin = max(2, options.orangeMargin - 3)
+        if let aspect = options.relaxedMaxAspect { relaxedOptions.maxAspect = max(options.maxAspect, aspect) }
         let relaxedFinder = CandidateFinder(options: relaxedOptions, width: W, height: H, bgY: bgY, bgCr: bgCr)
-        var relaxedCache: [Int: [BallCandidate]] = [:]
+        let relaxedKey = WindowFrames.finderKey(relaxedOptions)
         func relaxed(_ k: Int, _ diameter: Double) -> [BallCandidate] {
-            if let r = relaxedCache[k] { return r }
-            let r = relaxedFinder.candidates(y: frames[k].y.data, cr: frames[k].cr.data, expectedDiameterFull: diameter)
-            relaxedCache[k] = r
-            return r
+            window.memoFrame(relaxedKey, diameter: diameter, k) {
+                relaxedFinder.candidates(y: frames[k].y.data, cr: frames[k].cr.data, expectedDiameterFull: diameter)
+            }
         }
 
         if useCoreML, options.coreMLHybridCentroid {
@@ -762,8 +848,7 @@ public enum BallDetector {
                     let med = sizes[sizes.count / 2]
                     if abs(med / D - 1) > 0.15 {
                         D = med
-                        cands = frames.map { finder.candidates(y: $0.y.data, cr: $0.cr.data, expectedDiameterFull: D) }
-                        relaxedCache.removeAll()
+                        cands = strictCandidates(D)
                         stats.suppressedInflatedBoxes = 0
                         merged = (0..<frames.count).map { hybrid($0, diameter: D) }
                     }
@@ -793,13 +878,23 @@ public enum BallDetector {
         let boxes: [CGRect?] = frames.map { bodyBoxes[$0.index] }
         func inBox(_ c: BallCandidate, _ k: Int) -> Bool { boxes[k].map { $0.contains(CGPoint(x: c.u, y: c.v)) } ?? false }
 
-        // Forward linking from one seed candidate. Returns frame-array index → candidate.
-        func linkForward(from i0: Int, _ c0: BallCandidate) -> [Int: BallCandidate] {
+        // Linking from one candidate, one frame at a time in either direction. Returns frame-array index → candidate.
+        //
+        // `direction` +1 walks towards the rim, −1 back towards the hands; the predictor, the gate and the gap
+        // tolerance are the same either way, because a time-reversed parabola is still a parabola. `initial` is
+        // history the walk may start with (the first frames of an already-linked track, when extending it
+        // backwards), so the parabolic prediction is available from the first step. `limit` caps how many frames
+        // from `i0` the walk may reach.
+        func link(from i0: Int, _ c0: BallCandidate, direction: Int = 1,
+                  initial: [(i: Int, u: Double, v: Double)] = [], limit: Int? = nil) -> [Int: BallCandidate] {
             var track: [Int: BallCandidate] = [i0: c0]
-            var hist: [(i: Int, u: Double, v: Double)] = [(i0, c0.u, c0.v)]
+            var hist: [(i: Int, u: Double, v: Double)] = initial.isEmpty ? [(i0, c0.u, c0.v)] : initial
             var lost = 0, lastI = i0, exitedTop = false
-            var i = i0 + 1
-            while i < frames.count {
+            let backward = direction < 0
+            let stage = backward ? "back" : "forward"
+            var i = i0 + direction
+            while i >= 0, i < frames.count {
+                if let limit, abs(i - i0) > limit { break }
                 let pred: SIMD2<Double>
                 if hist.count >= minimumHistoryFrames {
                     let h = hist.suffix(historyFrames)
@@ -809,18 +904,24 @@ public enum BallDetector {
                     pred = SIMD2(polyval(pu, x), polyval(pv, x))
                 } else if hist.count >= 2 {
                     let a = hist[hist.count - 2], b = hist[hist.count - 1]
-                    let k = Double(i - b.i) / Double(max(1, b.i - a.i))
+                    let k = Double(i - b.i) / Double(b.i - a.i == 0 ? direction : b.i - a.i)
                     pred = SIMD2(b.u + (b.u - a.u) * k, b.v + (b.v - a.v) * k)
                 } else { pred = SIMD2(hist[0].u, hist[0].v) }
                 let offframe = exitedTop || pred.y < -0.5 * D || pred.x < -D || pred.x > Double(fullW) + D
                 let step = hist.count >= 2 ? hypot(hist[hist.count - 1].u - hist[hist.count - 2].u, hist[hist.count - 1].v - hist[hist.count - 2].v) : D
                 let gate = max(gateFloorDiameters * D, options.gateSpeedFactor * step)
-                    * (1 + gateGrowthPerFrame * Double(i - lastI - 1))
+                    * (1 + gateGrowthPerFrame * Double(abs(i - lastI) - 1))
                 // direction of travel for the re-entry test (the Python tracker assumed left→right)
                 let dir: Double = hist.count >= 2 ? (hist[hist.count - 1].u - hist[0].u >= 0 ? 1 : -1) : 1
+                // The shooter's body box excludes blobs once the ball has left it — a forward-pass rule only: the
+                // backward pass is walking *into* the hands on purpose.
+                func excluded(_ c: BallCandidate) -> Bool {
+                    if backward { return !options.backwardAllowsBoxes && c.origin == .box }
+                    return i - i0 > bodyExclusionDelayFrames && inBox(c, i)
+                }
                 var best: (score: Double, c: BallCandidate)? = nil
                 for c in cands[i] {
-                    if i - i0 > bodyExclusionDelayFrames, inBox(c, i) { continue }   // ignore body blobs once the ball has left
+                    if excluded(c) { continue }
                     let sc: Double
                     if offframe {
                         // re-entry: any ball-sized blob in the top band, ahead of the exit point
@@ -835,7 +936,7 @@ public enum BallDetector {
                 }
                 if best == nil, !offframe, let sd = seed[frames[i].index] {
                     // the linker's own prediction failed but the caller has a coarse position on this frame: re-acquire there
-                    for c in cands[i] where !(i - i0 > bodyExclusionDelayFrames && inBox(c, i)) {
+                    for c in cands[i] where !excluded(c) {
                         let dist = hypot(c.u - sd.x, c.v - sd.y)
                         guard dist <= 1.5 * D else { continue }
                         let sc = dist / D + 0.8 * abs(log(c.diameter / D))
@@ -848,7 +949,7 @@ public enum BallDetector {
                     // parabola this well established, a weaker blob within 0.8 D of the prediction is image evidence,
                     // not an extrapolation — the position still comes from pixels. (pytrack `predicted_weak_candidates`.)
                     for c in relaxed(i, D) {
-                        if i - i0 > bodyExclusionDelayFrames, inBox(c, i) { continue }
+                        if excluded(c) { continue }
                         let dist = hypot(c.u - pred.x, c.v - pred.y)
                         guard dist <= 0.8 * D, c.diameter >= 0.4 * D, c.diameter <= 1.6 * D else { continue }
                         let sc = dist / D + 0.5 * abs(log(c.diameter / D))
@@ -857,19 +958,21 @@ public enum BallDetector {
                     }
                 }
                 if let b = best {
-                    track[i] = b.c; hist.append((i, b.c.u, b.c.v)); lost = 0; lastI = i; exitedTop = false
+                    var c = b.c; c.stage = stage
+                    track[i] = c; hist.append((i, c.u, c.v)); lost = 0; lastI = i; exitedTop = false
                 } else {
                     lost += 1
                     // the ball left through the top edge: keep the track alive and search for re-entry in the top band
                     if !exitedTop, hist[hist.count - 1].v < 1.5 * D, lost >= rates.frames(2.0 / 120) { exitedTop = true }
                     if !offframe, lost > maxGapFrames { break }
-                    if offframe, i - lastI > maxOffframeFrames { break }
+                    if offframe, abs(i - lastI) > maxOffframeFrames { break }
                     if !offframe, pred.y > Double(fullH) + 2 * D { break }        // below the floor: gone
                 }
-                i += 1
+                i += direction
             }
             return track
         }
+        func linkForward(from i0: Int, _ c0: BallCandidate) -> [Int: BallCandidate] { link(from: i0, c0) }
 
         // Seeds: candidates coinciding with the caller's positions, earliest first; keep the longest track.
         var bestTrack: [Int: BallCandidate] = [:]
@@ -882,6 +985,31 @@ public enum BallDetector {
                 let tr = linkForward(from: k, c)
                 if tr.count > bestTrack.count { bestTrack = tr }
             }
+        }
+        if options.seedFromCoreMLBoxes, useCoreML {
+            // Every ball-sized box the model put anywhere in the window is a place the track could start. The
+            // scanner's seeds only exist where it looked (the top of the frame and the rim); a box lower down, near
+            // the release, starts the walk earlier. Boxes already on the best track so far are not worth relinking.
+            var boxSeeds = 0
+            let boxBudget = 10 * maxSeedsTried
+            // A box may start the track earlier than the scanner's track did, but not by more than the backward
+            // reach: "longest track wins" would otherwise prefer a track that begins a second earlier with the ball
+            // still in the shooter's hands, and the analyzer cannot read a flight through that.
+            let earliest = (bestTrack.keys.min() ?? 0) - extendBackFrames
+            boxes: for (k, list) in coreMLCands.enumerated() where k >= earliest {
+                for b in list where Double(b.meanDiff) >= options.seedBoxMinConfidence
+                    && options.seedBoxDiameterBand.contains(b.diameter / D) {
+                    if let on = bestTrack[k], hypot(on.u - b.u, on.v - b.v) < 1.0 * D { continue }
+                    // The candidate the hybrid placement made of this box (or the nearest blob to it).
+                    guard let c = cands[k].filter({ hypot($0.u - b.u, $0.v - b.v) < 1.0 * D })
+                        .min(by: { hypot($0.u - b.u, $0.v - b.v) < hypot($1.u - b.u, $1.v - b.v) }) else { continue }
+                    boxSeeds += 1
+                    if boxSeeds > boxBudget { break boxes }
+                    let tr = linkForward(from: k, c)
+                    if tr.count > bestTrack.count { bestTrack = tr }
+                }
+            }
+            stats.boxSeedsTried = boxSeeds
         }
         // Fallback: no candidate under any seed — start from the candidate nearest a seed within 4 D.
         if bestTrack.isEmpty {
@@ -897,48 +1025,80 @@ public enum BallDetector {
         }
         guard !bestTrack.isEmpty else { return ([], stats) }
 
-        // Backward extension into the hands: nearest candidate within 1 D, stop when the blob is no longer ball-sized.
+        // Where the flight ends is decided on the forward track alone. The trims look for the *first* apex, and a
+        // track that has already been extended back to the set point has a false one there — the ball held over the
+        // head dips before it rises — so a backward pass that reaches the hands must run after them, not before.
+        // `base` keeps its old order (extension, then trims) so its tracks do not move.
+        func applyTrims() -> Bool {
+            var trimmed = false
+            if options.trimAfterFreeFlight, bestTrack.count >= rates.frames(options.bounceMinimumTrackSeconds) + 8,
+               let cut = freeFlightEnd(bestTrack, frames: frames, D: D, options: options, rates: rates) {
+                for k in bestTrack.keys where k >= cut { bestTrack[k] = nil }
+                trimmed = true
+            }
+            if options.trimAfterBounce, bestTrack.count >= rates.frames(options.bounceMinimumTrackSeconds) {
+                // In free flight the image v rises to the apex and then only falls. The first frame that climbs back up
+                // by more than `bounceRiseDiameters` of a ball, well past the apex, is where the flight ended.
+                let keys = bestTrack.keys.sorted()
+                let apexAt = keys.min { bestTrack[$0]!.v < bestTrack[$1]!.v }!
+                let apexV = bestTrack[apexAt]!.v
+                var lowest = apexV
+                var cut: Int? = nil
+                for k in keys where k > apexAt {
+                    let v = bestTrack[k]!.v
+                    if v > lowest { lowest = v; continue }
+                    if k - apexAt >= rates.frames(options.bouncePastApexSeconds), lowest - apexV >= 1.5 * D,
+                       v < lowest - options.bounceRiseDiameters * D { cut = k; break }
+                }
+                if let cut { for k in keys where k >= cut { bestTrack[k] = nil }; trimmed = true }
+            }
+            return trimmed
+        }
+        let trimsFirst = options.backwardLinker || options.parabolaExtend
+        var trimmedEnd: Int? = nil
+        if trimsFirst, applyTrims() { trimmedEnd = bestTrack.keys.max() }
+
         let i0 = bestTrack.keys.min()!
-        var prev = bestTrack[i0]!
-        var i = i0 - 1, extended = 0
-        while i >= 0, extended < extendBackFrames {
-            let backGate = extendBackGateDiameters * D
-            var cb: (dist: Double, c: BallCandidate)? = nil
-            // Only image blobs may extend the track backwards. This is the shooter's hands: a Core ML box here
-            // swallows ball and hand together and its centre is not the ball's, which moves the pose release rule.
-            for c in cands[i] where c.origin != .box {
-                let d = hypot(c.u - prev.u, c.v - prev.v)
-                if d <= backGate, cb == nil || d < cb!.dist { cb = (d, c) }
+        if options.backwardLinker {
+            // The same linker, run back towards the hands from the track's first frame, starting with the
+            // parabola the first few forward frames already define.
+            let head = bestTrack.keys.sorted().prefix(historyFrames)
+            let initial = head.reversed().map { (i: $0, u: bestTrack[$0]!.u, v: bestTrack[$0]!.v) }
+            let back = link(from: i0, bestTrack[i0]!, direction: -1, initial: initial, limit: extendBackFrames)
+            for (k, c) in back where k < i0 { bestTrack[k] = c }
+        } else {
+            // Backward extension into the hands: nearest candidate within 1 D, stop when the blob is no longer ball-sized.
+            var prev = bestTrack[i0]!
+            var i = i0 - 1, extended = 0
+            while i >= 0, extended < extendBackFrames {
+                let backGate = extendBackGateDiameters * D
+                var cb: (dist: Double, c: BallCandidate)? = nil
+                // Only image blobs may extend the track backwards. This is the shooter's hands: a Core ML box here
+                // swallows ball and hand together and its centre is not the ball's, which moves the pose release rule.
+                for c in cands[i] where c.origin != .box {
+                    let d = hypot(c.u - prev.u, c.v - prev.v)
+                    if d <= backGate, cb == nil || d < cb!.dist { cb = (d, c) }
+                }
+                if cb == nil, let c = finder.localBlob(y: frames[i].y.data, cr: frames[i].cr.data, near: SIMD2(prev.u, prev.v), expectedDiameterFull: D) {
+                    // the strict whole-frame candidate failed (ball merging with the hands): a local blob with an adaptive threshold
+                    let d = hypot(c.u - prev.u, c.v - prev.v)
+                    if d <= backGate { cb = (d, c) }
+                }
+                guard let cb, cb.c.diameter <= 1.7 * D else { break }
+                var c = cb.c; c.stage = "back"
+                bestTrack[i] = c; prev = c; extended += 1; i -= 1
             }
-            if cb == nil, let c = finder.localBlob(y: frames[i].y.data, cr: frames[i].cr.data, near: SIMD2(prev.u, prev.v), expectedDiameterFull: D) {
-                // the strict whole-frame candidate failed (ball merging with the hands): a local blob with an adaptive threshold
-                let d = hypot(c.u - prev.u, c.v - prev.v)
-                if d <= backGate { cb = (d, c) }
-            }
-            guard let cb, cb.c.diameter <= 1.7 * D else { break }
-            bestTrack[i] = cb.c; prev = cb.c; extended += 1; i -= 1
         }
 
-        if options.trimAfterFreeFlight, bestTrack.count >= rates.frames(options.bounceMinimumTrackSeconds) + 8,
-           let cut = freeFlightEnd(bestTrack, frames: frames, D: D, options: options, rates: rates) {
-            for k in bestTrack.keys where k >= cut { bestTrack[k] = nil }
+        if options.parabolaExtend {
+            // Walk outwards from both ends along the flight's own model, taking only what the pixels offer.
+            let added = parabolaExtend(&bestTrack, cands: cands, relaxed: relaxed, frames: frames, D: D,
+                                       options: options, rates: rates, backLimit: extendBackFrames, firstLinked: i0,
+                                       forwardLimit: trimmedEnd)
+            stats.parabolaExtendedFrames = added
         }
-        if options.trimAfterBounce, bestTrack.count >= rates.frames(options.bounceMinimumTrackSeconds) {
-            // In free flight the image v rises to the apex and then only falls. The first frame that climbs back up
-            // by more than `bounceRiseDiameters` of a ball, well past the apex, is where the flight ended.
-            let keys = bestTrack.keys.sorted()
-            let apexAt = keys.min { bestTrack[$0]!.v < bestTrack[$1]!.v }!
-            let apexV = bestTrack[apexAt]!.v
-            var lowest = apexV
-            var cut: Int? = nil
-            for k in keys where k > apexAt {
-                let v = bestTrack[k]!.v
-                if v > lowest { lowest = v; continue }
-                if k - apexAt >= rates.frames(options.bouncePastApexSeconds), lowest - apexV >= 1.5 * D,
-                   v < lowest - options.bounceRiseDiameters * D { cut = k; break }
-            }
-            if let cut { for k in keys where k >= cut { bestTrack[k] = nil } }
-        }
+
+        if !trimsFirst { _ = applyTrims() }
         for c in bestTrack.values {
             switch c.origin {
             case .refined: stats.hybridRefinedFrames += 1
@@ -950,7 +1110,8 @@ public enum BallDetector {
         var out: [BallDetection] = bestTrack.keys.sorted().map { k in
             let c = bestTrack[k]!
             return BallDetection(frameIndex: frames[k].index, pts: frames[k].pts, u: c.u, v: c.v, diameterPx: c.diameter,
-                                 score: c.meanDiff, predicted: false, source: "detected", edge: c.edge)
+                                 score: c.meanDiff, predicted: false, source: "detected", edge: c.edge,
+                                 origin: "\(c.stage).\(c.origin)")
         }
         if options.templateFill {
             let tTpl = StageTimings.now()
@@ -1024,6 +1185,61 @@ public enum BallDetector {
         return candidates.max(by: { $0.meanDiff < $1.meanDiff })
     }
 
+
+    // MARK: - Extending the track along its own parabola
+
+    /// Walk outwards from both ends of `track` along the projected parabola fitted to it, one frame at a time,
+    /// accepting the best ball-sized blob (strict or relaxed) within `parabolaExtendRadiusDiameters` of the
+    /// prediction and refitting as samples are added. Tolerates `maxGapSeconds` of frames with nothing near the
+    /// prediction, then stops. Backwards it may reach at most `backLimit` frames before `firstLinked`; forwards it
+    /// runs until the prediction leaves the frame or the gap runs out (the free-flight trim decides later where the
+    /// flight really ended). Returns how many frames were added. Nothing is invented: a frame with no blob near
+    /// the model contributes nothing.
+    static func parabolaExtend(_ track: inout [Int: BallCandidate], cands: [[BallCandidate]],
+                               relaxed: (Int, Double) -> [BallCandidate],
+                               frames: [(index: Int, pts: Double, y: Plane8, cr: Plane8)], D: Double,
+                               options: BallDetectorOptions, rates: FrameRates, backLimit: Int, firstLinked: Int,
+                               forwardLimit: Int? = nil) -> Int {
+        func clean() -> [Int] { track.keys.sorted().filter { !track[$0]!.edge } }
+        func fit(_ idx: [Int]) -> ProjectedParabola? {
+            guard idx.count >= 8 else { return nil }
+            return ProjectedParabola.fit(t: idx.map { frames[$0].pts }, u: idx.map { track[$0]!.u }, v: idx.map { track[$0]!.v })
+        }
+        guard var model = fit(clean()) else { return 0 }
+        let radius = options.parabolaExtendRadiusDiameters * D
+        let maxGap = rates.frames(options.maxGapSeconds)
+        let refitEvery = rates.frames(0.05)
+        var added = 0
+        for direction in [-1, 1] {
+            guard var i = direction < 0 ? track.keys.min() : track.keys.max() else { continue }
+            var lost = 0, sinceRefit = 0
+            while true {
+                i += direction
+                guard i >= 0, i < frames.count else { break }
+                if direction < 0, firstLinked - i > backLimit { break }
+                if direction > 0, let forwardLimit, i > forwardLimit { break }   // the flight was cut here: nothing past it is flight
+                if track[i] != nil { continue }
+                let (pu, pv) = model.predict(frames[i].pts)
+                guard pu > -D, pv > -D, pu < Double(2 * frames[0].y.width) + D, pv < Double(2 * frames[0].y.height) + D else { break }
+                var best: (score: Double, c: BallCandidate)? = nil
+                for c in cands[i] + relaxed(i, D) {
+                    let dist = hypot(c.u - pu, c.v - pv)
+                    guard dist <= radius, c.diameter >= 0.4 * D, c.diameter <= 1.6 * D else { continue }
+                    let sc = dist / D + 0.5 * abs(log(c.diameter / D))
+                    if best == nil || sc < best!.score { best = (sc, c) }
+                }
+                if var c = best?.c {
+                    c.stage = "extend"
+                    track[i] = c; added += 1; lost = 0; sinceRefit += 1
+                    if sinceRefit >= refitEvery, let m = fit(clean()) { model = m; sinceRefit = 0 }
+                } else {
+                    lost += 1
+                    if lost > maxGap { break }
+                }
+            }
+        }
+        return added
+    }
 
     // MARK: - Where free flight ends
 

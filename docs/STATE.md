@@ -7,7 +7,7 @@ state, and two of them still assert a day cap and a foot-angle repeatability tha
 contradict. HANDOFF is now the **archive of past states plus the topic deep-dives** — read it for
 history and for the measurement write-ups it alone carries, not for what is true today.
 
-Last updated **2026-09-27**.
+Last updated **2026-09-29**.
 
 ---
 
@@ -29,7 +29,7 @@ Five tabs: Shoot · Review · Learn · IQ · You. `App/README.md` describes what
 |---|---|
 | `swift test` | **461 ShotGeometryTests + 27 FormEvalKitTests, 0 failures** (was 434 + 27 on 2026-09-25; +27 this pass — `ShotAcceptanceTests`, `BallSizeCueTests`, `FlightWindowFinderTests`, `TrackSpanAndGravityTests`) |
 | `GeometryHarness` | **GATE: PASS**, byte-identical to `docs/PHASE1-REPORT.md` — row I (3 px noise) still marginally FAILs exactly as recorded there, which is how you know the fit has not moved |
-| App Release build | last verified 2026-09-25 (simulator, clean derived-data path, after `xcodegen generate`) |
+| App Release build | verified 2026-09-29 (simulator, unsigned, clean derived-data path under `/tmp`, after `xcodegen generate`) — `ShotVideo` gained `ContentSpeed.swift` and the tracker options; the app compiles against both |
 
 **`swift test` cannot codesign its test bundle inside this folder** — it is file-provider-synced, so
 `com.apple.FinderInfo` returns to the build product mid-build and `xattr -c` does not hold. Build
@@ -53,26 +53,41 @@ not, stop and find out why before trusting anything downstream.
 phone applies. Every number in `docs/EXPERIMENTS.md` dated 2026-09-24 was scored with `legacy` and
 reproduces with that flag; see `docs/PIPELINE.md`.
 
+**Build the cache with `--gravity-time-scale` from now on** (and `--track-variants base` if you want the
+per-window diag files): the corpus is ×1 content at both ends of every clip, and only the `-gts` caches read
+those 15 windows correctly. A rebuild on 2026-09-29 with the shipping tracker reproduced the 26/43, 12/30,
+1/25 live counts exactly, so the tracker is unchanged for `base`.
+
 ## Where the numbers stand on the 2026-09-13 corpus
 
-98 windows, all hand-labelled (88 `shot`, 6 `notShot`, 4 `unsure`). Under the shipping acceptance rule:
+98 windows, all hand-labelled (89 `shot`, 5 `notShot`, 4 `unsure` — one label corrected 2026-09-29).
+Under the shipping acceptance rule, geometry `autoFoundNoPool`:
 
-| variant | accepted | recall | precision |
+| tracker / time scale | accepted | recall | precision |
 |---|---|---|---|
-| `baseline` | 44 / 98 | 48.9 % | 100 % |
-| `autoFoundTrace` | 57 / 98 | 62.5 % | 100 % |
-| `autoFoundNoPool` | 59 / 98 | 64.8 % | 100 % |
+| `baseline` geometry (for reference) | 44 / 98 | 48.9 % | 100 % |
+| shipping tracker, clip read as ×4 throughout (`base`) | 59 / 98 | 64.0 % | 100 % |
+| **shipping tracker, refused windows re-read as ×1 when gravity fits (`base-gts`)** | **74 / 98** | **80.9 %** | **100 %** |
 
-**Precision has been 100 % for every variant ever run.** Not one accepted window was a non-shot. The
-whole problem is recall, and nothing may cost that precision.
+**Precision has been 100 % for every variant ever run.** Not one accepted window was a non-shot (the one
+apparent exception on 2026-09-29 was a wrong label, corrected). The whole problem is recall, and nothing may
+cost that precision.
 
 ## The open lead
 
-**`BIG-CHANGES.md` B14.** The shots still refused are short arcs of badly-tracked ball: the accepted
-windows carry a median 122 samples over 1.08 s, the gravity-refused ones 34 samples over 0.32 s moving
-2.4× faster in the image. At the fit's current `minimumSpan` of 0.15 s a *perfectly tracked* ball
-passes the 8 % gravity gate only 34 % of the time. First change is honesty — refuse an arc too short
-to determine `g` as such, instead of reporting a `g` of −20 m/s². Then lengthen the tracks.
+**B14 is answered, and it was the footage.** The short, fast, gravity-refused arcs are the clips' normal-speed
+stretches — an exported slo-mo file is ×1 content outside its slow section, and every clip has such a stretch
+at both ends (18 windows). Re-reading a refused window as ×1 when gravity then fits (`session
+--gravity-time-scale`) is worth **+15 windows, p = 0.0001**, precision held. Six track-lengthening levers
+(`TrackingVariants.swift`, measured on the same decoded windows) all sit within chance, and a real backward
+pass loses 28 windows because the analyzer misreads pre-release frames. So the next recall is not in the
+tracker: of the 17 real shots still refused, 8 are put-backs, layups and shots from beside or under the rim
+that a single view cannot condition (no fix — refuse them honestly), 3 are good tracks whose held-ball prefix,
+rebound suffix or off-frame apex the flight-window finder misreads (`ReleaseDetection.swift`, the lead now),
+1 leaves the top of the frame for 1.4 s, and the rest are fast-section windows at the 1.6 m height floor or on
+the exporter's speed ramp. `docs/EXPERIMENTS.md` 2026-09-29
+has the four rows; the per-variant pictures the decision was made from are regenerated by
+`tools/trackviz/` from a `--track-variants` cache (its README has the three commands).
 
 B11 (detector diameter self-consistency) **was the top lead and is not any more**: the azimuth solve
 is never the gate on this corpus, an absolute ball-size prior rescued zero windows, and motion blur
